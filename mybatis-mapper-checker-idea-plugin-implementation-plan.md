@@ -1,0 +1,1308 @@
+# MyBatis Mapper Checker — IDEA 插件实现方案（V1）
+
+> 版本：V1 定稿
+> 日期：2026-09-05
+> 前身：`archive/ibatis-mapper-checker-idea-plugin-implementation-plan.v0.md`（iBatis 为主的初版，已废弃）
+
+---
+
+## 1. 产品定位
+
+### 1.1 一句话
+
+**检查 MyBatis 项目里 Java 侧声明或传入的参数，与 Mapper SQL 实际使用的参数是否一致，手动触发，汇总成报告。兼容 iBatis 2。**
+
+### 1.2 解决的问题
+
+```java
+public interface OrderMapper {
+    List<Order> queryOrder(@Param("merchantId") Long merchantId,
+                           @Param("poiId") Long poiId,
+                           @Param("status") String status);
+}
+```
+
+```xml
+<mapper namespace="com.example.order.dao.OrderMapper">
+    <select id="queryOrder" resultType="Order">
+        SELECT * FROM orders
+        WHERE merchant_id = #{merchantId}
+          AND status = #{status}
+    </select>
+</mapper>
+```
+
+`poiId` 声明了、传了，SQL 里没有。代码能编译能运行，查出来的数据却比预期多。
+靠人眼几乎发现不了，尤其当参数由别的方法拼出来、Mapper XML 又在另一个 Maven 模块里的时候。
+
+插件要做的就是把这类"沉默的参数遗漏"找出来，指到具体那一行。
+
+### 1.3 检查链路
+
+```text
+Mapper 接口方法签名 / DAO 调用点          Java 侧参数集合
+              ↓                                  ↓
+     statementId 定位  ──────────→  Mapper XML / 注解 SQL 参数集合
+                                                 ↓
+                                          两边做差集
+                                                 ↓
+                              参数未使用 / statement 不存在 / 多候选
+                                                 ↓
+                                        报告工具窗口，双击跳转
+```
+
+### 1.4 触发方式：手动，不实时
+
+插件不注册实时 Inspection，编辑器里不出现任何波浪线、gutter 报错图标或状态栏提示。
+
+```text
+右键菜单 / Tools 菜单 → 检查 Mapper 参数契约
+         ↓
+后台任务，有进度，可取消
+         ↓
+报告工具窗口：按 Module → 文件分组，带置信度和备注
+```
+
+理由：这类检查的价值在"集中排查"，不在"边写边提示"。实时标线对老项目是持续干扰。
+
+### 1.5 适用范围与优先级
+
+```text
+1. MyBatis Mapper 接口          orderMapper.queryOrder(merchantId, poiId)       ← 主路径，必须做好
+2. MyBatis SqlSession 字符串     sqlSession.selectList("com.example...OrderMapper.queryOrder", params)
+3. iBatis 2 / Spring iBatis      sqlMapClient.queryForList("Order.queryOrder", params)   ← 兼容路径
+```
+
+Mapper 侧：
+
+```text
+MyBatis   <mapper namespace="com.example.order.dao.OrderMapper">   XML statement
+MyBatis   @Select / @Insert / @Update / @Delete                    注解 SQL
+iBatis 2  <sqlMap namespace="Order">                              XML statement（兼容）
+```
+
+三种调用方式归一为同一个 `DaoInvocation` 模型，两种 XML 归一为同一个 `MapperStatement` 模型，规则层不区分来源。
+
+### 1.6 明确不做
+
+| 不做 | 原因 |
+|---|---|
+| 编辑器实时标线 | 减少干扰，见 1.4 |
+| "Mapper 使用了 Java 未提供的参数"检查 | 动态 SQL 下可选条件合法，检查无意义，永久不做 |
+| 关键参数 / 数据范围参数升级规则 | 所有参数一视同仁 |
+| 自动修改 SQL | 列名、AND/OR、WHERE 结构都不确定 |
+| `@SelectProvider` 等 Provider SQL | SQL 由 Java 拼出，无法静态确定，标无法解析 |
+| MyBatis-Plus `BaseMapper` 内置方法、Wrapper | 继承来的方法跳过；Wrapper 留后续 |
+| Lombok `@Builder` 链式构造 | 留后续 |
+| 跨类继承、接口多实现的参数追踪 | 标无法解析 |
+| Kotlin、Spring XML、数据库 Schema 校验、SQL 执行计划 | 不在范围 |
+| GitLab CI、SonarQube、独立 CLI | 第一阶段只做 IDEA 插件 |
+
+---
+
+## 2. 命名
+
+| 项 | 值 |
+|---|---|
+| 插件显示名 | **MyBatis Mapper Checker** |
+| 插件 id | `com.mapperchecker.mybatis` |
+| Gradle 根工程 | `mybatis-mapper-checker` |
+| Gradle 子模块 | `checker-core`、`checker-idea` |
+| Java 根包 | `com.mapperchecker` |
+| 规则前缀 | `MMC`（MyBatis Mapper Checker） |
+| 设置页路径 | Settings → Tools → MyBatis Mapper Checker |
+| 工具窗口名 | MyBatis Mapper Checker |
+| 设置持久化文件 | `.idea/mybatis-mapper-checker.xml` |
+| 资源文件 | `messages/MapperCheckerBundle.properties`（默认中文） |
+
+插件 id 和根包一旦发布不可更改，阶段 1 结束前确认。当前项目目录名 `ibatis-mapper-checker` 建议改为 `mybatis-mapper-checker`。
+
+---
+
+## 3. 技术基线
+
+| 项目 | 方案 |
+|---|---|
+| Java 语言级别 | 17（IDEA 2023.3 运行于 JBR 17） |
+| 构建 | Gradle Kotlin DSL + IntelliJ Platform Gradle Plugin 2.x |
+| since-build | 233（IDEA 2023.3） |
+| until-build | 不设 |
+| Plugin Verifier 目标 | 2023.3 / 2024.1 / 2024.3 / 2025.x / 2026.x 各一个 |
+| Java 分析 | Java PSI（不用 UAST，V1 只做 Java，PSI 精度更高、调试更直接） |
+| XML 分析 | XML PSI |
+| 项目级索引 | FileBasedIndex |
+| 检查触发 | AnAction + Task.Backgroundable |
+| 批量接入 | GlobalInspectionTool（只在 Inspect Code 中运行，不在编辑器实时运行） |
+| 结果展示 | ToolWindow |
+| 项目模型 | Project / Module / ProjectFileIndex / ModuleRootManager |
+
+兼容原则：装了 MyBatisX、MyBatis Log 等主流插件的 IDEA 都能装本插件。避免只在新版本存在的 API，必要时用 `ApplicationInfo` 判断版本走分支。
+
+---
+
+## 4. 工程结构与分层
+
+```text
+mybatis-mapper-checker/
+├── checker-core/          纯 Java，不依赖 IDEA
+│   ├── model/             DaoInvocation、MapperStatement、ParameterReference、ContractIssue ...
+│   ├── naming/            参数名归一化、别名组、OGNL 标识符提取
+│   ├── contract/          差集计算、置信度判定
+│   └── rule/              MMC001 / MMC002 / MMC003
+│
+└── checker-idea/          所有 IDEA 相关代码
+    ├── action/            三个触发 Action
+    ├── run/               后台任务、运行级上下文
+    ├── index/             FileBasedIndex 实现
+    ├── mapper/            XML / 注解 SQL 解析、include 解析
+    ├── java/              Mapper 接口识别、签名解析、数据流追踪、字符串调用识别
+    ├── module/            模块可见性
+    ├── report/            工具窗口、报告模型、导出
+    ├── inspection/        GlobalInspectionTool 适配
+    ├── navigation/        Ctrl+Click、gutter icon
+    ├── suppress/          三种抑制方式
+    └── settings/          Project 级设置、Configurable
+```
+
+### 4.1 checker-core 禁止依赖 IDEA API
+
+`checker-core` 的 Gradle 依赖里没有 IntelliJ Platform，编译期就不可能出现 `PsiElement`、`VirtualFile`、`Project`、`Module`。
+
+core 只认识纯业务模型。位置用 `SourceLocation`（路径 + 行 + 列），模块用 `String moduleName`。
+
+```text
+IDEA PSI / Index  →  翻译成纯模型  →  core 计算  →  ContractIssue  →  IDEA 报告窗口
+    (idea 层)         (idea 层)        (core 层)       (core 层)          (idea 层)
+```
+
+收益：
+
+- 参数名归一化、OGNL 提取、差集、置信度这些最容易出错的逻辑，用普通 JUnit 毫秒级测完
+- IDEA 升级只影响 idea 层翻译代码，规则一行不动
+- 以后加 CLI 或 Sonar 只换翻译层
+- 规则里塞不进"再去 PSI 里找找"的逻辑，Index / Resolver / Rule 三层自然分开
+
+边界举例：跨方法追踪要递归进入 `PsiMethod`，在 idea 层；core 只接收追踪完的 `ParameterReference` 集合。模块可见性依赖 `ModuleRootManager`，在 idea 层；core 拿到的是筛过的候选 statement 列表。
+
+---
+
+## 5. 核心模型
+
+### 5.1 ParameterReference
+
+```java
+public final class ParameterReference {
+    String rootName;                 // 比较用的根名
+    Set<String> aliases;             // 无 @Param 时的别名组，如 {a, arg0, param1}；有明确名字时为空
+    String propertyPath;             // 完整路径，如 query.poiId，仅用于展示
+    ParameterSourceType sourceType;  // PARAM_ANNOTATION / METHOD_PARAM / MAP_PUT / MAP_OF / BEAN_SETTER
+                                     // / XML_INLINE / XML_DYNAMIC_ATTR / XML_TEST_EXPR / ANNOTATION_SQL ...
+    Confidence confidence;           // HIGH / MEDIUM / LOW
+    SourceLocation location;
+}
+```
+
+### 5.2 DaoInvocation
+
+```java
+public final class DaoInvocation {
+    InvocationKind kind;             // MAPPER_METHOD / SQL_SESSION_CALL / SQLMAP_CLIENT_CALL
+    Operation operation;             // SELECT / INSERT / UPDATE / DELETE / UNKNOWN
+    String statementId;              // 已解析的完整 id；未解析时为 null
+    List<ParameterReference> parameters;
+    List<String> callPath;           // 跨方法追踪路径，如 [OrderDao.query, OrderDao.buildParams]
+    SourceLocation location;
+    String moduleName;
+}
+```
+
+### 5.3 MapperStatement
+
+```java
+public final class MapperStatement {
+    StatementSource source;          // MYBATIS_XML / MYBATIS_ANNOTATION / IBATIS_XML
+    String namespace;
+    String id;
+    String fullId;
+    StatementType type;              // select / insert / update / delete / statement / procedure
+    List<ParameterReference> directParameters;
+    List<String> includeRefs;
+    String parameterMapRef;          // iBatis 2 parameterMap="..."，可为空
+    boolean partiallyParsed;         // 注解 SQL 含无法求值片段 / include 动态 refid
+    SourceLocation location;
+    String moduleName;
+}
+```
+
+### 5.4 ContractIssue
+
+```java
+public final class ContractIssue {
+    RuleId ruleId;
+    Severity severity;
+    Confidence confidence;
+    String message;                  // 中文主文案
+    String remark;                   // 中文备注，可为空
+    List<String> callPath;           // 可为空
+    SourceLocation primaryLocation;  // 报告双击跳转位置
+    SourceLocation secondaryLocation;// Mapper statement 位置
+}
+```
+
+### 5.5 UnresolvedInvocation
+
+不是问题，但要让使用者知道哪些调用没被覆盖：
+
+```java
+public final class UnresolvedInvocation {
+    String statementId;              // 可为空
+    UnresolvedReason reason;         // METHOD_PARAM / FIELD / MULTI_IMPL / DEPTH_EXCEEDED / PROVIDER
+                                     // / DYNAMIC_INCLUDE / MAP_MUTATED / LIBRARY_CODE / STATEMENT_ID_DYNAMIC ...
+    SourceLocation location;
+}
+```
+
+### 5.6 CheckResult
+
+```java
+public final class CheckResult {
+    List<ContractIssue> issues;
+    List<UnresolvedInvocation> unresolved;
+    Statistics statistics;           // 扫描文件数、DAO 调用数、成功解析数、无法解析数、已抑制数、各置信度问题数
+}
+```
+
+---
+
+## 6. 规则
+
+| 规则 | 含义 | 默认级别 | 置信度 |
+|---|---|---|---|
+| MMC001 | 参数已声明或传入，但 Mapper SQL 未使用 | Warning | 高 / 中 / 低，见下 |
+| MMC002 | statement 不存在 | Error | 高；可能定义在未索引依赖中时为中 |
+| MMC003 | statement 存在多个候选，无法确定目标 | Warning | 高 |
+
+### 6.1 MMC001 置信度
+
+| 来源 | 置信度 | 备注文案 |
+|---|---|---|
+| 接口 `@Param` 声明 | 高 | 无 |
+| 方法内 `Map.put` / `Map.of` | 高 | 无 |
+| 接口无 `@Param` 的别名组 | 中 | 无 |
+| 跨方法追踪 | 中 | 附调用路径 |
+| Bean setter | 低 | 参数来自 Bean setter，该属性可能另有用途，请人工确认 |
+| 实体属性（单 Bean / `@Param` Bean 展开） | 低 | 属性来自实体类声明，该实体可能被多个 statement 共用，请人工确认 |
+
+### 6.1A 内置分页参数忽略（真机试用后加入）
+
+PageHelper、MyBatis-Plus、手写分页都会把 pageNum / pageSize / offset / limit / orderBy 等放进参数对象，SQL 里不引用（由拦截器拼 LIMIT）。
+逐个报 MMC001 全是误报，真机试用时占了绝大多数。内置名单与通配（`page*`、`*PageSize`、`*Offset`、`*Limit`、`*OrderBy` 等）
+默认开启忽略，设置里可关闭或补充。带路径时只看最后一段（`q.pageSize` → `pageSize`）。
+
+置信度只影响报告排序和展示，不影响是否报告。原则：**报告可疑，而不是断言错误**，由使用者判断。
+
+### 6.2 MMC002 对 Mapper 接口的含义
+
+接口方法既没有 XML statement 也没有 SQL 注解，运行时 MyBatis 抛 `BindingException`，是确定性错误。定位到方法名。
+
+### 6.3 MMC003 触发情形
+
+- 多个模块存在同 fullId 的 statement 且都可见
+- 同一 XML 或多个 XML 中 fullId 重复（databaseId 不同的除外，见 8.7）
+- 接口方法既有 XML statement 又有 SQL 注解
+- 接口方法重载（MyBatis 本身不允许）
+- MyBatis 短 id 调用 `selectList("query")` 命中多个 namespace
+
+### 6.4 实现顺序
+
+```text
+MMC002（接口方法 → XML / 注解定位）
+   ↓
+MMC001 接口声明级 @Param
+   ↓
+MMC001 方法内 Map
+   ↓
+MMC001 Bean setter（低置信度）
+   ↓
+MMC001 跨方法
+   ↓
+MMC003
+   ↓
+SqlSession 字符串调用 + iBatis 2 兼容
+```
+
+先把定位做准，再做参数差异。
+
+---
+
+## 7. Mapper 侧：索引
+
+### 7.1 索引清单
+
+```text
+MapperStatementIndex
+  key    fullId                        com.example.order.dao.OrderMapper.queryOrder  /  Order.queryOrder
+  value  namespace, id, type, databaseId, directParameters, includeRefs, parameterMapRef, 文件, 偏移
+
+MapperNamespaceIndex
+  key    namespace                     com.example.order.dao.OrderMapper
+  value  文件列表                       用于判定"某接口是否有对应 XML"
+
+SqlFragmentIndex
+  key    fullId                        com.example.common.dao.Common.dataScope
+  value  directParameters, includeRefs
+
+ParameterMapIndex（iBatis 2）
+  key    fullId                        Order.orderParamMap
+  value  property 列表
+```
+
+### 7.2 Index 原则
+
+Index 阶段只依赖当前文件内容。XML 只产出 namespace、statement、type、include 引用、直接参数引用。
+**不在 Index 阶段展开跨文件 include**，跨文件放到 Resolver。
+
+### 7.3 输入过滤
+
+```text
+文件类型 = XML
+根标签 ∈ { mapper, sqlMap }             读取前 2KB 判断，或 DOCTYPE 含 mybatis / ibatis
+范围 = 项目内容 + library roots           依赖 jar 里的 Mapper XML 也索引
+不区分 source root / resource root        放在 src/main/java 下的 XML 同样索引
+```
+
+注解 SQL 不进索引，检查接口方法时直接读 PSI 注解。
+
+---
+
+## 8. Mapper 侧：解析
+
+### 8.1 MyBatis XML
+
+根标签 `<mapper namespace="...">`，namespace 通常是接口全限定名。
+
+statement 标签：`select`、`insert`、`update`、`delete`。
+片段：`<sql id="...">`，引用：`<include refid="..."/>`。
+
+### 8.2 MyBatis 注解 SQL
+
+```java
+@Select("SELECT * FROM orders WHERE merchant_id = #{merchantId} AND status = #{status}")
+List<Order> queryOrder(@Param("merchantId") Long merchantId, @Param("status") String status);
+```
+
+```text
+@Select / @Insert / @Update / @Delete
+  → value 为字符串或字符串数组，用 PsiConstantEvaluationHelper 逐段求值后拼接
+  → 求不出的片段跳过，statement 标 partiallyParsed，该 statement 不报 MMC001
+  → 含 <script> 时按 XML 规则解析动态标签
+  → #{} / ${} 提取规则同 XML
+
+@SelectProvider / @InsertProvider / @UpdateProvider / @DeleteProvider
+  → 标 UNRESOLVED，原因 PROVIDER
+```
+
+### 8.3 iBatis 2 XML（兼容）
+
+根标签 `<sqlMap namespace="...">`，namespace 为短名。
+
+statement 标签：`select`、`insert`、`update`、`delete`、`statement`、`procedure`。
+片段：`<sql id="...">`，引用：`<include refid="..."/>`。
+参数映射：`<parameterMap id="..."><parameter property="..."/></parameterMap>`，statement 以 `parameterMap="..."` 引用并用 `?` 占位。
+
+### 8.4 include 解析
+
+两阶段：
+
+```text
+Index 阶段     Order.queryOrder  includes: [Common.scope]
+               Common.scope      parameters: [merchantId, poiId]
+
+Resolver 阶段  Order.queryOrder  实际参数 = 自身直接参数 ∪ Common.scope 参数 ∪ ...
+```
+
+支持 A → B → C → D 链式展开。必须检测 A → B → A 循环：遇到循环停止展开，statement 标 partiallyParsed，记内部诊断，不抛异常。
+
+`<include refid="${dynamic}">` 目标不可静态确定：statement 标 UNRESOLVED，原因 DYNAMIC_INCLUDE。
+
+`<include refid="x"><property name="k" value="v"/></include>` 中 `v` 的 `${}` 是局部替换，不计入参数。
+
+### 8.5 参数引用归一化
+
+比较的是 **rootName**。
+
+MyBatis（XML 与注解 SQL 相同）：
+
+| 形态 | rootName | 说明 |
+|---|---|---|
+| `#{poiId}` | `poiId` | |
+| `#{poiId, jdbcType=VARCHAR, typeHandler=...}` | `poiId` | 逗号后为属性 |
+| `#{query.poiId}` | `query` | 取根 |
+| `#{ids[0]}` | `ids` | |
+| `${orderBy}` | `orderBy` | |
+| `${alias.column}` | `alias` | |
+| `${@com.example.Const@VALUE}` | 不计入 | OGNL 静态访问 |
+| `<if test="...">`、`<when test="...">` | 见 8.6 | |
+| `<foreach collection="ids" item="it" index="i">` | `ids` | `it`、`i` 在体内为局部名，不计入 |
+| `<bind name="p" value="'%' + keyword + '%'">` | `keyword` | `p` 为局部名，不计入 |
+| `<selectKey>` 内的引用 | 照常计入 | 访问同一参数对象 |
+| `<where>` `<set>` `<trim>` `<choose>` `<otherwise>` | 无参数 | |
+| `<resultMap>` `<association select>` `<collection>` | 不计入 | 不是参数使用 |
+| `<![CDATA[ ... ]]>` 内文本 | 照常提取 | 实现时读 XmlText 全部子节点 |
+| SQL 注释内 `-- #{x}` | 照常计入 | MyBatis 不识别注释，照样替换 |
+
+iBatis 2（兼容）：
+
+| 形态 | rootName |
+|---|---|
+| `#poiId#`、`#poiId:VARCHAR#` | `poiId` |
+| `#query.poiId#` | `query` |
+| `#ids[]#`、`#ids[].id#` | `ids` |
+| `$orderBy$` | `orderBy` |
+| 所有动态标签的 `property="x"` | `x` |
+| `<isEqual property="a" compareProperty="b">` | `a`、`b` |
+| `<iterate property="ids">` | `ids` |
+| `parameterMap="pm"` | `pm` 下所有 `<parameter property>` |
+| `<dynamic>` `<isParameterPresent>` | 无参数 |
+
+`parameterClass` / `parameterType` 只是类型声明，不产生参数引用。
+
+### 8.6 test 表达式提取
+
+```text
+按 OGNL 词法切出标识符
+排除关键字        and or not null true false in instanceof
+排除 . 之后的标识符   query.poiId 只取 query
+排除 ( 之前的标识符   list.size() 中 size 是方法
+排除 @ 开头的 token   静态访问
+排除内置变量        _parameter _databaseId
+排除局部名          foreach item/index、bind name
+排除字符串字面量内部
+```
+
+```xml
+<if test="query.poiId != null and ids.size() > 0 and status == 'ON' and _parameter != null">
+```
+
+提取：`query`、`ids`、`status`。
+
+### 8.7 statement 合并与去重
+
+| 情形 | 决策 |
+|---|---|
+| 同 id 不同 `databaseId` | 视为一条 statement，参数取并集，不报 MMC003 |
+| 同 namespace 分散在多个 XML | MyBatis 允许，按 fullId 合并，只有 fullId 重复才报 MMC003 |
+| 接口方法既有 XML 又有注解 SQL | MMC003 |
+
+---
+
+## 9. Java 侧：调用识别
+
+### 9.1 Mapper 接口（主路径）
+
+**检查对象是接口方法声明，不是调用点。**
+
+- 一个接口方法对应一条 statement，参数契约在签名处定死
+- 调用点可能几十个，逐个检查重复报告
+- 声明级不需要数据流追踪，置信度高
+
+判定接口是 Mapper 接口，满足任一：
+
+```text
+MapperNamespaceIndex 中存在 key == 接口全限定名
+接口带 @org.apache.ibatis.annotations.Mapper
+接口任一方法带 MyBatis SQL 注解
+```
+
+`@MapperScan` 方式的项目没有 `@Mapper` 注解，靠前一条覆盖。
+
+跳过的方法：
+
+```text
+default 方法、static 方法
+从父接口继承的方法（MyBatis-Plus BaseMapper 等），只检查接口自身声明的方法
+带 Provider 注解的方法（标 UNRESOLVED）
+```
+
+每个接口方法产出一个 `DaoInvocation`：
+
+```text
+kind         = MAPPER_METHOD
+statementId  = 接口全限定名 + "." + 方法名
+operation    = 由 XML 标签或注解类型决定
+parameters   = 由方法签名决定，见 9.2
+location     = 方法声明；参数问题定位到具体 PsiParameter
+```
+
+### 9.2 声明级参数（MyBatis 命名规则）
+
+| 方法签名 | Java 侧参数 | 置信度 |
+|---|---|---|
+| `query(@Param("a") Long a, @Param("b") Long b)` | `a`、`b` | 高 |
+| `query(Long a, Long b)` 无 `@Param` | 别名组 `{a, arg0, param1}`、`{b, arg1, param2}` | 中 |
+| `query(@Param("q") OrderQuery q)` | `q`；Mapper 写 `#{q.poiId}` 取根匹配 | 高 |
+| `query(OrderQuery q)` 单 Bean 无 `@Param` | 展开实体属性（字段 + getter/setter，含父类，排除 static/transient），每个属性与 SQL 路径比对；`address` 被 `#{address.city}` 覆盖算使用 | 低 |
+| `query(@Param("q") OrderQuery q)` | 根 `q` 之外再按 `q.prop` 展开属性；根整体未用时只报根，不逐个报属性 | 根高 / 属性低 |
+
+实体展开的前提：类型可解析、位于项目源码（库类型如 MyBatis-Plus `Page` 不展开）、不是 Map / 集合 / 数组 / 标量 / 枚举 / 接口。
+这条是真机试用后改的：原方案"单 Bean 不检查"，试用反馈"参数是实体的扫不出哪个属性没用到"，因此改为低置信度逐属性报告，由使用者判断。设置里可关闭。
+| `query(Map<String,Object> m)` 单 Map 无 `@Param` | 声明级不检查，转调用点，见 9.3 | — |
+| `query(List<Long> ids)` 单集合无 `@Param` | 别名组 `{list, collection, arg0, param1}` | 中 |
+| `query(Long[] ids)` 单数组无 `@Param` | 别名组 `{array, arg0, param1}` | 中 |
+| `query(Long id)` 单标量无 `@Param` | 不检查；任意名字合法 | — |
+| `RowBounds`、`ResultHandler` 类型参数 | 排除 | — |
+
+别名组规则：Mapper 引用了组内任一名字即算该参数已使用。`arg0` 是否可用取决于编译时 `-parameters`，静态分析无法确定，三种一起算，宁可漏报。
+
+### 9.3 调用点补充
+
+接口方法只有一个 Map 或 Bean 参数时，声明级看不到 key，再去调用点做数据流追踪（第 10 节）：
+
+```java
+Map<String, Object> params = new HashMap<>();
+params.put("poiId", poiId);
+orderMapper.queryOrder(params);
+```
+
+调用点 receiver 类型解析到 Mapper 接口即可，不依赖变量名。同一 statement 的多个调用点各自独立报告，位置在各自的 `put` 行。
+
+### 9.4 SqlSession 字符串调用
+
+```java
+sqlSession.selectList("com.example.order.dao.OrderMapper.queryOrder", params)
+sqlSession.selectOne(...) / insert(...) / update(...) / delete(...)
+sqlSessionTemplate.selectList(...)
+```
+
+判定依据：receiver 类型为 `SqlSession` / `SqlSessionTemplate` 及子类 + 方法名 + 第一参数为 String。
+statementId 为第一参数，参数对象为第二实参，走第 10 节追踪。
+
+### 9.5 iBatis 2（兼容）
+
+```java
+sqlMapClient.queryForList(...) / queryForObject(...) / insert(...) / update(...) / delete(...)
+getSqlMapClientTemplate().queryForList(...)
+```
+
+receiver 类型为 `SqlMapClient` / `SqlMapClientTemplate` 及子类。处理同 9.4。
+
+### 9.6 statementId 解析
+
+接口方法：全限定名 + "." + 方法名，无需解析字符串。
+
+字符串调用：
+
+```java
+selectList("com.example...OrderMapper.query", p);          // 字面量
+private static final String NS = "com.example...OrderMapper.";
+selectList(NS + "query", p);                                 // 常量拼接
+private static final String QUERY = NS + "query";           // 常量引用
+selectList(QUERY, p);
+```
+
+用 `PsiConstantEvaluationHelper` 求值。求不出（`selectList(getName(), p)`）标 UNRESOLVED，原因 STATEMENT_ID_DYNAMIC，不报。
+
+MyBatis 允许短 id `selectList("query")`：全项目唯一时可解析，多候选报 MMC003。
+
+---
+
+## 10. Java 侧：参数数据流
+
+用于 9.3 / 9.4 / 9.5 中参数对象为 Map 或 Bean 的情形。以下示例用 `orderMapper.query(...)`，字符串调用处理完全相同。
+
+### 10.1 Map
+
+```java
+Map<String, Object> params = new HashMap<>();
+params.put("merchantId", merchantId);
+params.put("poiId", poiId);
+orderMapper.query(params);
+```
+
+| 形态 | 处理 |
+|---|---|
+| `put("k", v)`，k 为字面量或可求值常量 | 计入 `k` |
+| `put(expr, v)`，k 不可求值 | 整个 Map 标 UNRESOLVED，原因 MAP_KEY_DYNAMIC |
+| `Map.of(...)`、`Map.ofEntries(...)` | 计入所有 key |
+| Guava `ImmutableMap.of(...)`、`ImmutableMap.builder().put(...).build()` | 同 `Map.of` |
+| 双花括号 `new HashMap<>() {{ put("a", 1); }}` | 匿名类初始化块内的 put 归到该 Map |
+| `Maps.newHashMap()`、`new LinkedHashMap<>()` | 构造方式无关，只看后续 put |
+| `putAll(other)` | other 可追踪则合并，否则整个 Map 标 UNRESOLVED |
+| `remove(...)`、`clear()` | 整个 Map 标 UNRESOLVED，原因 MAP_MUTATED |
+| lambda 内的 put | 视为同一方法体内的 put，取并集 |
+| Map 是方法入参 / 字段 / 接口方法返回值 | UNRESOLVED |
+
+### 10.2 Bean
+
+```java
+OrderQuery query = new OrderQuery();
+query.setMerchantId(merchantId);
+query.setPoiId(poiId);
+orderMapper.query(query);
+```
+
+| 形态 | 处理 |
+|---|---|
+| `setX(v)` | 按 JavaBeans 去 `set` 后首字母小写：`setPoiId` → `poiId` |
+| `setURL(v)` | 前两字母大写保持原样：`URL`（`Introspector.decapitalize` 规则） |
+| `setPoi_id(v)` | `poi_id` |
+| 链式 `q.setA(a).setB(b)`（Lombok `@Accessors(chain=true)`） | 沿调用链向左找根变量，每个 `setX` 都算 |
+| Lombok `@Setter` / `@Data` | 依赖 Lombok 插件补全 PSI；解析不到则 Bean 标 UNRESOLVED |
+| Lombok `@Builder` 链 | V1 不支持，UNRESOLVED |
+| Bean 无任何 setter 调用（直接传入参 Bean） | UNRESOLVED |
+
+Bean 判定：类型不是 `Map` 子类型、不是 JDK 基础类型、且当前方法内有 setter 调用。
+
+Bean 来源的 MMC001 一律低置信度，理由见 6.1。
+
+### 10.3 跨方法追踪
+
+```java
+Map<String, Object> params = buildParams(merchantId, poiId);
+orderMapper.query(params);
+
+private Map<String, Object> buildParams(Long merchantId, Long poiId) {
+    Map<String, Object> m = new HashMap<>();
+    m.put("merchantId", merchantId);
+    m.put("poiId", poiId);
+    return m;
+}
+```
+
+进入被调方法的条件：
+
+```text
+能唯一解析到 PsiMethod
+在当前 Project 源码中（不进 jar）
+不是抽象方法、接口方法
+```
+
+被调方法内支持：
+
+```text
+Map / Bean 构造后 return
+多个 return 分支，取并集
+继续调用其他方法构造参数（递归，默认深度 3，可配）
+```
+
+返回后在当前方法继续补充：
+
+```java
+Map<String, Object> params = buildBaseParams(merchantId);
+params.put("status", status);
+orderMapper.query(params);          // 参数 = {merchantId, status}
+```
+
+停止条件（标 UNRESOLVED，不报）：
+
+```text
+深度超限                     DEPTH_EXCEEDED
+调用链循环                   CYCLE
+被调方法多实现               MULTI_IMPL
+被调方法在库代码             LIBRARY_CODE
+参数对象是入参 / 字段         METHOD_PARAM / FIELD
+Map 被 putAll(不可追踪) / remove / clear   MAP_MUTATED
+```
+
+多分支取并集的理由：只要有一条路径会 put 某 key 而 Mapper 从不使用，该 put 就是无效代码，报 MMC001 是准确的。
+
+问题定位：在实际执行 put 的那一行，即使它在另一个方法里。报告附调用路径：
+
+```text
+路径：OrderDao.query() → OrderDao.buildParams()
+```
+
+多消费者：同一构造方法被多个 statement 消费，且只有部分 statement 未用某参数，则不报（该 put 对其他 statement 有效）。反向查找在后台任务中完成，不受编辑器响应约束。
+
+### 10.4 Java 侧归一化汇总
+
+| Java 形态 | rootName / 别名组 | 置信度 |
+|---|---|---|
+| `@Param("poiId") Long poiId` | `poiId` | 高 |
+| 无 `@Param` 第 N 参数 `x` | `{x, arg(N-1), paramN}` | 中 |
+| 无 `@Param` 单 Collection / 数组 | `{list, collection, ...}` / `{array, ...}` | 中 |
+| `map.put("poiId", v)`、`Map.of("poiId", v)` | `poiId` | 高（方法内）/ 中（跨方法） |
+| `map.put("query", bean)` | `query`，不下钻 | 同上 |
+| `bean.setPoiId(v)` | `poiId` | 低 |
+| 单标量 | 不检查 | — |
+| 入参 / 字段 / 多实现 / 库代码 | UNRESOLVED | — |
+
+---
+
+## 11. 匹配与比较
+
+```text
+MMC001 候选 = Java 侧 rootName（含别名组）集合 − Mapper 侧 rootName 集合
+```
+
+- 别名组内任一名字被 Mapper 引用，即视为已使用。
+- 精确匹配，大小写敏感。
+- Java 侧名字找不到、但 Mapper 侧存在仅大小写不同的名字：仍报 MMC001，备注"Mapper 中存在 'poiid'，疑似大小写不一致"。
+- 命中忽略配置（第 15 节）的不进入候选。
+- statement 为 partiallyParsed 时不报 MMC001，只做 MMC002 / MMC003。
+- 单标量参数不报 MMC001。
+
+---
+
+## 12. 模块可见性
+
+### 12.1 使用 IDEA Project Model
+
+不自己解析 Maven Reactor。用 `ProjectFileIndex`、`ModuleRootManager`、`ProjectRootManager` 取得：当前文件所属 Module、Source / Resource Root、直接依赖、传递依赖。
+
+### 12.2 候选优先级
+
+```text
+当前 Module → 直接依赖 Module → 传递依赖 Module
+```
+
+"当前 Module"对接口方法指接口所在模块，对调用点指调用代码所在模块。
+
+默认不全项目匹配。同级候选出现多个 → MMC003。
+
+### 12.3 严格 / 兼容模式
+
+```text
+● 严格模块依赖     只查当前 + 依赖 Module
+○ 整项目兼容模式   找不到时允许全 Project fallback；多候选仍报 MMC003，不猜
+```
+
+### 12.4 test root
+
+test 资源目录下的 XML 只对 test 源码可见。main 代码解析 statement 时排除 test root，避免测试 Mapper 造成 MMC003。
+
+### 12.5 多数据库变体目录
+
+`mapper/mysql/OrderMapper.xml` 与 `mapper/oracle/OrderMapper.xml` 各一份：报 MMC003，备注"可能为多数据库变体"。提供设置项"忽略路径模式"整体排除某目录。
+
+### 12.6 依赖 jar 中的 statement
+
+library roots 已索引。仍找不到时，MMC002 降为中置信度，备注"可能定义在未索引的依赖中"。
+
+---
+
+## 13. 检查执行流程
+
+### 13.1 入口
+
+```text
+编辑器右键            检查当前文件
+Project 视图右键      检查所选文件 / 目录 / Module
+Tools 菜单            检查整个项目
+报告窗口工具栏         重新检查 / 更换范围
+Analyze → Inspect Code   勾选本插件的 GlobalInspectionTool（批量模式）
+```
+
+不注册 LocalInspectionTool。
+
+### 13.2 Dumb Mode
+
+```text
+触发时 DumbService.isDumb()
+   → 提示"IDEA 正在建立索引，请索引完成后再检查。"
+   → 不启动任务，不排队
+```
+
+Ctrl+Click 导航在 Dumb Mode 下静默返回空。原则：宁可不跑，不能出 `IndexNotReadyException`。
+
+### 13.3 执行
+
+```text
+Task.Backgroundable（可取消，进度 = 已处理 / 总数）
+   ↓
+发现阶段：定位 Mapper 接口与字符串调用点（13.4）
+   ↓
+按文件分片，每片 ReadAction.nonBlocking，及时让出读锁
+   ↓
+每个 DaoInvocation：定位 statement → 取 Mapper 参数 → 取 Java 参数 → 差集 → 抑制过滤 → ContractIssue
+   ↓
+汇总 CheckResult
+   ↓
+EDT 刷新报告窗口
+```
+
+取消：任务终止，报告保留上一次结果。
+
+### 13.4 发现策略
+
+扫描量与 Mapper 数量成正比，不与 Java 文件总数成正比：
+
+```text
+Mapper 接口
+  MapperNamespaceIndex 全部 key → JavaPsiFacade.findClass
+  ∪ AnnotatedElementsSearch(@Mapper)
+  ∪ 带 MyBatis SQL 注解的方法所在接口
+
+字符串调用点
+  对 SqlSession / SqlSessionTemplate / SqlMapClient / SqlMapClientTemplate 的目标方法
+  做 MethodReferencesSearch
+```
+
+范围为"当前文件"时直接遍历该文件 PSI。
+
+### 13.5 运行级缓存
+
+所有缓存随一次任务创建、任务结束销毁，不做跨运行缓存：
+
+```text
+CheckRunContext
+ ├ resolvedStatements   fullId → 展开 include 后的参数集合
+ ├ fragmentParams       fullId → 片段参数
+ ├ parameterMaps        fullId → property 列表
+ ├ builderResults       PsiMethod → 跨方法追踪结果
+ ├ moduleVisibility     Module → 可见 Module 集合
+ └ statistics
+```
+
+用普通 `HashMap` 即可。理由：手动触发不需要为编辑器响应攒缓存；避免 `PsiModificationTracker` 失效策略复杂度；结果永远与触发那一刻的代码一致。
+
+---
+
+## 14. 报告
+
+### 14.1 工具窗口
+
+窗口名 `MyBatis Mapper Checker`。
+
+统计条：
+
+```text
+范围：整个项目   Mapper 接口：46   DAO 调用：328   成功解析：317   无法解析：11   已抑制：4   问题：23（高 15 / 中 5 / 低 3）
+```
+
+树形表格，Module → 文件 → 问题：
+
+| 列 | 内容 |
+|---|---|
+| 规则 | MMC001 / MMC002 / MMC003 |
+| 参数 | poiId |
+| statement | com.example.order.dao.OrderMapper.queryOrder |
+| 位置 | OrderMapper.java:18 |
+| 置信度 | 高 / 中 / 低 |
+| 备注 | 空或说明文字 |
+
+交互：
+
+```text
+双击            跳到 Java 位置（@Param 参数 / put 行 / 方法名）
+右键 跳转 Mapper  打开 XML 定位 statement，或接口方法上的注解
+右键 忽略此处     写入"statement#参数"组合抑制，从报告移除
+右键 忽略参数     全局忽略该参数名
+右键 忽略 statement
+右键 标记已确认    仅本次报告，不持久化
+工具栏 过滤       规则 / 置信度 / Module
+工具栏 导出       Markdown / CSV，默认到项目根 mybatis-mapper-checker-report.md
+工具栏 重新检查 / 更换范围
+```
+
+### 14.2 文案
+
+```text
+参数 'poiId' 已声明在 'OrderMapper.queryOrder'，但对应 Mapper SQL 未使用该参数。
+
+规则：MMC001
+Mapper：order-dao/src/main/resources/mapper/OrderMapper.xml
+statement：com.example.order.dao.OrderMapper.queryOrder
+置信度：高
+```
+
+调用点 Map 场景：`参数 'poiId' 已传入 'OrderMapper.queryOrder'，但对应 Mapper SQL 未使用该参数。`
+
+跨方法追加：`路径：OrderDao.query() → OrderDao.buildParams()`，置信度：中。
+
+Bean 追加：`备注：参数来自 Bean setter，该属性可能另有用途，请人工确认。`，置信度：低。
+
+MMC002：`'OrderMapper.queryOrder' 未找到对应的 Mapper statement 或 SQL 注解。`
+
+MMC003：`'OrderMapper.queryOrder' 匹配到多个 Mapper statement，无法确定实际调用目标。` 并列出各候选文件。
+
+### 14.3 无法解析分组
+
+单独分组列出所有 `UnresolvedInvocation`，注明原因（入参 / 字段 / 多实现 / 深度超限 / Provider / 动态 include / 动态 statementId），不算问题，让使用者知道哪些调用没被覆盖。
+
+### 14.4 其他
+
+- 项目内没有任何 Mapper：显示"未发现 Mapper 接口或 Mapper XML"，不算错误。
+- 报告不持久化，IDE 重启后为空。
+- 记住上次选择的范围。
+- 检查运行中编辑文件不崩溃，位置用 `SmartPsiElementPointer` 保存，修改后仍可跳转。
+- 不做：编辑器波浪线、gutter 报错图标、状态栏常驻提示。
+
+---
+
+## 15. 抑制与配置
+
+### 15.1 三种抑制
+
+```text
+1. 组合抑制    设置中记录 "com.example.order.dao.OrderMapper.queryOrder#poiId"，只抑制这一个组合
+              报告右键"忽略此处"直接写入
+2. 注解抑制    @SuppressWarnings("MMC001")，可放在接口方法、参数、DAO 方法上
+3. 行注释      // mapper-checker: ignore   放在 put 行或参数所在行
+```
+
+三种方式在统计条里合计为"已抑制：N"。
+
+### 15.2 Project 级设置
+
+持久化到 `.idea/mybatis-mapper-checker.xml`，可提交版本库。
+
+```text
+忽略参数（支持通配 page* / *Sort）
+忽略内置分页 / 排序参数名单（默认开）
+展开实体参数逐属性检查（默认开，低置信度）
+忽略 statement
+组合抑制列表
+忽略路径模式（如 **/mapper/oracle/**）
+跨方法追踪深度（默认 3）
+严格 / 兼容模式（默认严格）
+规则启停
+规则级别
+gutter icon 开关（默认关）
+报告默认范围（默认整个项目）
+```
+
+### 15.3 国际化
+
+文案全部走 `MapperCheckerBundle`，默认 zh_CN。后续加英文只补一个 properties。
+
+---
+
+## 16. 导航
+
+Mapper 接口方法：
+
+```java
+List<Order> queryOrder(@Param("poiId") Long poiId);
+            ^^^^^^^^^^   Ctrl/Cmd + Click → OrderMapper.xml <select id="queryOrder">
+```
+
+字符串调用：
+
+```java
+sqlSession.selectList("com.example.order.dao.OrderMapper.queryOrder", params);
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+gutter icon 默认关闭。导航是被动能力不算干扰，但 gutter icon 在每个 DAO 行常驻，对喜欢干净编辑器的人是噪音。
+
+检测到 MyBatisX 等已提供接口方法双向跳转的插件时，本插件的接口方法导航让位，只保留字符串调用导航，避免重复菜单项。
+
+反向导航（statement → 调用处）留后续。
+
+---
+
+## 17. 性能设计
+
+手动触发后，要求从"毫秒级不卡编辑器"变为"后台跑完、可取消、不冻结 UI"。
+
+禁止：
+
+```text
+在 EDT 上执行检查
+长时间持有一个 ReadAction
+用 Files.walk() 代替 FileBasedIndex
+遍历所有 Java 文件判断是否 Mapper
+```
+
+单个 DaoInvocation 理想开销：
+
+```text
+方法 PSI + 1 次 Index 查询 + 少量 include 展开 + （跨方法时）有限次 PsiMethod 解析
+```
+
+关键点：FileBasedIndex 定位；`ReadAction.nonBlocking` 分片；`ProgressIndicator` 取消；运行级缓存；`SmartPsiElementPointer` 保存报告位置。
+
+---
+
+## 18. 包结构
+
+```text
+com.mapperchecker
+│
+├── core                                  （checker-core）
+│   ├── model
+│   │   ├── DaoInvocation / MapperStatement / ParameterReference
+│   │   ├── ContractIssue / UnresolvedInvocation / CheckResult
+│   │   ├── RuleId / Severity / Confidence / SourceLocation
+│   ├── naming
+│   │   ├── ParameterNameNormalizer       setX → x，Introspector 规则
+│   │   ├── AliasGroupBuilder             argN / paramN / list / array
+│   │   └── OgnlIdentifierExtractor       test 表达式提取
+│   ├── contract
+│   │   ├── ParameterContractEngine       差集 + 别名组匹配 + 大小写提示
+│   │   └── ConfidenceResolver
+│   └── rule
+│       ├── UnusedParameterRule           MMC001
+│       ├── StatementNotFoundRule         MMC002
+│       └── AmbiguousStatementRule        MMC003
+│
+└── idea                                  （checker-idea）
+    ├── action
+    │   ├── CheckCurrentFileAction / CheckSelectionAction / CheckProjectAction
+    ├── run
+    │   ├── ContractCheckTask             Task.Backgroundable
+    │   ├── CheckRunContext               运行级缓存
+    │   └── InvocationDiscovery           13.4 发现策略
+    ├── index
+    │   ├── MapperStatementIndex / MapperNamespaceIndex
+    │   ├── SqlFragmentIndex / ParameterMapIndex
+    │   └── MapperXmlInputFilter
+    ├── mapper
+    │   ├── MyBatisXmlParser / IBatisXmlParser
+    │   ├── AnnotationSqlParser
+    │   ├── IncludeResolver
+    │   └── MapperStatementResolver       Index + include + parameterMap → 参数集合
+    ├── java
+    │   ├── MapperInterfaceDetector
+    │   ├── MapperMethodInvocationExtractor
+    │   ├── MethodSignatureParameterResolver
+    │   ├── StringCallInvocationExtractor SqlSession / SqlMapClient
+    │   ├── StatementIdResolver
+    │   ├── JavaParameterResolver         Map / Bean 数据流
+    │   └── ParameterBuilderMethodResolver 跨方法
+    ├── module
+    │   └── ModuleVisibilityResolver
+    ├── report
+    │   ├── CheckReportToolWindowFactory / CheckReportPanel / CheckReportModel
+    │   └── ReportExporter                Markdown / CSV
+    ├── inspection
+    │   └── MapperContractGlobalInspection
+    ├── navigation
+    │   ├── MapperGotoDeclarationHandler
+    │   └── MapperLineMarkerProvider
+    ├── suppress
+    │   └── SuppressionMatcher            组合 / 注解 / 行注释
+    └── settings
+        ├── MapperCheckerSettings
+        └── MapperCheckerConfigurable
+```
+
+---
+
+## 19. 测试
+
+### 19.1 分层
+
+```text
+checker-core     普通 JUnit：归一化、别名组、OGNL 提取、差集、置信度
+Light Test       Java + XML fixture，直接调用检查引擎，断言 ContractIssue 列表逐字段
+Heavy Test       多 Module 可见性
+Inspect Code     myFixture.testInspection() 冒烟
+```
+
+不用 `checkHighlighting()`，插件不产生编辑器高亮。
+
+Heavy Test 模拟：
+
+```text
+parent
+├ module-common     Common.xml（<sql> 片段）
+├ module-order      OrderMapper.java + OrderMapper.xml
+├ module-app        依赖 order
+└ module-sibling    与 order 无依赖，含同 fullId statement
+```
+
+### 19.2 测试矩阵
+
+**Mapper 接口**
+
+| 场景 | 预期 |
+|---|---|
+| `@Param("poiId")` 声明，XML 未用 | MMC001，高，位置在 PsiParameter |
+| `@Param` 全部使用 | 无 |
+| 无 `@Param` 双参数，XML 用 `#{param2}` 未用第一个 | MMC001（第一个），中 |
+| 无 `@Param` 双参数，XML 用 `#{arg0}` `#{arg1}` | 无 |
+| 单 Bean 无 `@Param`，XML 只用 `#{merchantId}` | 其余属性 MMC001，低，位置在实体字段 |
+| 单 Bean 含 pageNum / pageSize / orderBy 属性 | 内置分页名单忽略，不报 |
+| 单 Bean 属性 `address`，XML `#{address.city}` | 匹配，无问题 |
+| `@Param("q") Bean`，XML `#{q.merchantId}` | `q.poiId` 等未用属性 MMC001，低 |
+| `@Param("q") Bean` 整体未用 | 只报 `q`（高），不逐个报属性 |
+| 单 `Object` / `Date` 参数 | 库类型不展开，不检查 |
+| 单 Map 无 `@Param`，调用点 put 多余 key | MMC001，位置在 put 行 |
+| 单 `List<Long>`，XML `<foreach collection="list">` | 无 |
+| 单 `List<Long>`，XML 未用任何别名 | MMC001，中 |
+| 含 `RowBounds` | 排除 |
+| 方法无 XML 无注解 | MMC002，位置在方法名 |
+| 方法既有 XML 又有 `@Select` | MMC003 |
+| `@Select` 未用 `@Param` 参数 | MMC001 |
+| `@Select` 含 `<script><if test>` | 正确提取 |
+| `@Select` 值为常量拼接 | 求值后正确提取 |
+| `@Select` 含不可求值片段 | partiallyParsed，不报 MMC001 |
+| `@SelectProvider` | 不报，列入无法解析 |
+| `default` / `static` 方法 | 跳过 |
+| 继承自 `BaseMapper` 的方法 | 跳过 |
+| 接口重载同名方法 | MMC003 |
+| `@MapperScan` 项目（无 `@Mapper` 注解） | 靠 namespace 索引正确判定 |
+
+**字符串调用**
+
+| 场景 | 预期 |
+|---|---|
+| `sqlSession.selectList("全限定.id", map)` | 与 Map 场景同规则 |
+| 短 id 全项目唯一 | 可解析 |
+| 短 id 多候选 | MMC003 |
+| 静态常量 / 拼接 statementId | 正确 |
+| `selectList(getName(), p)` | 无法解析，不报 |
+| iBatis `queryForList("Order.query", map)` | 与 MyBatis 同规则 |
+
+**参数数据流**
+
+| 场景 | 预期 |
+|---|---|
+| Map put 遗漏 | MMC001，高 |
+| `Map.of` / `ImmutableMap.of` / 双花括号 | 正确 |
+| put key 为常量 | 正确 |
+| put key 不可求值 | 无法解析 |
+| `putAll(可追踪)` | 合并 |
+| `putAll(不可追踪)` / `remove` / `clear` | 无法解析 |
+| Bean setter 遗漏 | MMC001，低，备注 |
+| `setURL` ↔ `#{URL}` | 匹配 |
+| 链式 setter | 每个都算 |
+| Lombok `@Builder` | 无法解析 |
+| 入参 Bean 无 setter | 无法解析 |
+| 同类私有方法构造后遗漏 | MMC001，中，位置在构造方法 put，附路径 |
+| 其他类静态方法构造 | MMC001 |
+| 多 return 分支某分支遗漏 | MMC001 |
+| 构造后当前方法再 put | 合并 |
+| 构造方法被多 statement 消费仅部分未用 | 无 |
+| 深度超限 / 互相递归 | 无法解析，不抛异常 |
+| 接口方法多实现 / 入参 / 字段 | 无法解析 |
+
+**Mapper 解析**
+
+| 场景 | 预期 |
+|---|---|
+| `#{}` `${}` `#x#` `$x$` | 正确 |
+| `#{query.poiId}` ↔ Java `query` | 匹配 |
+| `<foreach item="it">` + `#{it}` | `it` 不计入 |
+| `<bind name="p">` + `#{p}` | `p` 不计入 |
+| `<if test="q.poiId != null and list.size() > 0">` | 提取 `q`、`list` |
+| `${@Const@V}` / `_parameter` | 不计入 |
+| CDATA 内 `#{}` | 提取 |
+| `<selectKey>` 内 `#{}` | 计入 |
+| `<resultMap>` / `<association select>` | 不计入 |
+| `<include>` / 跨 namespace include / 链式 include | 正确展开 |
+| include 循环 | 不死循环，partiallyParsed |
+| `<include refid="${x}">` | 无法解析 |
+| iBatis `parameterMap` + `?` | 正确 |
+| 同 id 不同 databaseId | 合并，不报 MMC003 |
+| 同 namespace 多文件 | 合并 |
+| Java `poiId` vs Mapper `poiid` | MMC001，备注大小写 |
+
+**模块与运行**
+
+| 场景 | 预期 |
+|---|---|
+| 同 Module / 依赖 Module / 传递依赖 | 正确 |
+| 不可见 sibling 同 fullId | 不误匹配 |
+| 兼容模式 fallback | 可解析；多候选仍 MMC003 |
+| test root XML 对 main 不可见 | 不报 MMC003 |
+| 多数据库变体目录 | MMC003 + 备注；忽略路径后消失 |
+| jar 内 XML | 可定位 |
+| 忽略参数 / statement / 组合 / `@SuppressWarnings` / 行注释 | 不报，计入已抑制 |
+| Dumb Mode 触发 | 提示，不启动，不抛异常 |
+| 中途取消 | 保留上次结果 |
+| 运行中编辑文件 | 不崩溃，可跳转 |
+| 导出 Markdown | 与窗口一致 |
+| 无 Mapper 项目 | 提示未发现 |
+
+---
+
+## 20. 实施阶段
+
+| 阶段 | 内容 | 产出 |
+|---|---|---|
+| 1 骨架 | Gradle Kotlin DSL、plugin.xml、两模块、Sandbox、Plugin Verifier、Bundle | 空插件可运行 |
+| 2 索引 | 四个 Index、输入过滤、library roots、test root 标记 | 可查 statement |
+| 3 Mapper 解析 | MyBatis XML、注解 SQL、iBatis XML、include、parameterMap、归一化、OGNL | 任意 statement → 参数集合 |
+| 4 Java 解析 | Mapper 接口判定、签名别名组、字符串调用、statementId 求值 | 任意 DaoInvocation |
+| 5 模块可见性 | 优先级、严格/兼容、test root、歧义 | 候选列表 |
+| 6 MMC002 / MMC003 | 定位规则 | 定位准确 |
+| 7 MMC001 声明级 | `@Param` / 别名组 / 差集 / 置信度 / 忽略 | 主路径可用 |
+| 8 MMC001 数据流 | Map / Bean / 链式 / Guava / 跨方法 / 多消费者 | 补充路径可用 |
+| 9 触发与报告 | 三个 Action、后台任务、运行级缓存、工具窗口、导出、GlobalInspectionTool | 端到端可用 |
+| 10 抑制与设置 | 三种抑制、设置页、持久化 | 可配置 |
+| 11 导航 | Ctrl+Click、gutter（默认关）、MyBatisX 让位 | |
+| 12 稳定性 | Heavy Test、Dumb Mode、取消、大项目耗时、Plugin Verifier 全版本 | 可发布 |
+
+阶段 6、7 完成后即可在真实项目上试用并收集误报。
+
+---
+
+## 21. 验收标准
+
+```text
+打开 Maven 父项目，IDEA 导入多个子模块
+   ↓
+Tools 菜单触发整个项目检查，后台运行，有进度，可取消
+   ↓
+跨 Maven Module 找到 Mapper XML 与注解 SQL
+   ↓
+发现 @Param 声明未使用、Map put 未使用、跨方法构造未使用
+   ↓
+报告按 Module / 文件分组，带置信度与中文备注，无法解析单独分组
+   ↓
+双击跳 Java，右键跳 Mapper
+   ↓
+Analyze → Inspect Code 得到同样结果
+```
+
+并满足：
+
+```text
+编辑器中没有任何实时波浪线或提示
+索引期间触发只给提示，不报错
+重新检查后报告反映最新代码
+检查期间编辑器可正常使用
+正常使用的参数不误报
+Bean setter 场景明确标低置信度
+sibling Module 不误匹配；同 fullId 不擅自猜测
+databaseId 变体、test root、多文件同 namespace 不误报 MMC003
+无法解析的调用在报告中可见
+```
+
+---
+
+## 22. 工程原则
+
+1. **准确率优先于覆盖率**：无法证明就不报；能报的标清置信度让人判断。
+2. **Index / Resolver / Rule / 展示分层**：Index 是单文件事实，Resolver 是跨文件关系，Rule 是业务判断，报告是展示。
+3. **core 不碰 IDEA API**。
+4. **尊重 Maven 模块结构**，不全项目乱匹配。
+5. **不自动改 SQL**，只做跳转和配置。
+6. **手动触发，零干扰**。
+7. **报告可疑而非断言错误**。
+8. **面向开发者的一切文案用中文**：注释、规则描述、报告、设置、测试说明、日志。保留英文：规则 ID、类名、Extension Point、枚举。
+
+---
+
+## 23. 后续扩展
+
+```text
+Lombok @Builder 链式构造
+@SelectProvider 的 Provider 方法静态分析
+MyBatis-Plus Wrapper 条件构造器
+方法入参反向追溯调用方
+跨类继承 / 接口多实现的参数追踪
+Bean 嵌套属性校验
+statement → 调用处反向导航
+可选的编辑器实时模式（默认关闭）
+UPDATE / DELETE 无 WHERE 检查
+${} 注入风险提示
+Kotlin / UAST
+checker-cli → GitLab CI
+checker-sonar
+```
+
+长期结构：
+
+```text
+              checker-core
+                   │
+      ┌────────────┼────────────┐
+      ▼            ▼            ▼
+checker-idea  checker-cli  checker-sonar
+```
+
+当前阶段只打磨一条链：**MyBatis Mapper 接口 / DAO 调用 → statement → 参数契约，iBatis 2 复用同一套模型作为兼容路径。**

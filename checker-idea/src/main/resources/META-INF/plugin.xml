@@ -1,0 +1,54 @@
+<idea-plugin>
+    <!-- id / name / version / since-build 由 Gradle pluginConfiguration 注入 -->
+    <id>com.mapperchecker.mybatis</id>
+    <name>MyBatis Mapper Checker</name>
+    <vendor>mapperchecker</vendor>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+    <depends>com.intellij.modules.xml</depends>
+
+    <resource-bundle>messages.MapperCheckerBundle</resource-bundle>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- 索引 -->
+        <fileBasedIndex implementation="com.mapperchecker.idea.index.MapperStatementIndex"/>
+        <fileBasedIndex implementation="com.mapperchecker.idea.index.MapperNamespaceIndex"/>
+
+        <!-- 报告工具窗口 -->
+        <toolWindow id="MyBatis Mapper Checker" anchor="bottom" icon="AllIcons.Toolwindows.ToolWindowProblems"
+                    factoryClass="com.mapperchecker.idea.report.CheckReportToolWindowFactory" canCloseContents="false"/>
+
+        <!-- Inspect Code 批量模式（不实时） -->
+        <globalInspection language="JAVA" shortName="MyBatisMapperContract"
+                          bundle="messages.MapperCheckerBundle" key="inspection.display.name" groupKey="inspection.group"
+                          enabledByDefault="true" level="WARNING"
+                          implementationClass="com.mapperchecker.idea.inspection.MapperContractGlobalInspection"/>
+
+        <!-- 设置 -->
+        <projectConfigurable parentId="tools" instance="com.mapperchecker.idea.settings.MapperCheckerConfigurable"
+                             id="com.mapperchecker.settings" bundle="messages.MapperCheckerBundle" key="settings.title"/>
+
+        <!-- 导航 -->
+        <gotoDeclarationHandler implementation="com.mapperchecker.idea.navigation.MapperGotoDeclarationHandler"/>
+        <codeInsight.lineMarkerProvider language="JAVA" implementationClass="com.mapperchecker.idea.navigation.MapperLineMarkerProvider"/>
+    </extensions>
+
+    <actions>
+        <group id="MapperChecker.Group" text="MyBatis Mapper Checker" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="MapperChecker.CheckProject" class="com.mapperchecker.idea.action.CheckActions$CheckProjectAction"
+                    text="检查整个项目的 Mapper 参数契约" description="检查整个项目中的 Mapper 参数契约"/>
+            <action id="MapperChecker.CheckCurrentFile.Tools" class="com.mapperchecker.idea.action.CheckActions$CheckCurrentFileAction"
+                    text="检查当前文件的 Mapper 参数契约" description="检查当前 Java 文件中 Mapper 接口与 DAO 调用的参数契约"/>
+        </group>
+        <action id="MapperChecker.CheckCurrentFile" class="com.mapperchecker.idea.action.CheckActions$CheckCurrentFileAction"
+                text="检查当前文件的 Mapper 参数契约" description="检查当前 Java 文件中 Mapper 接口与 DAO 调用的参数契约">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+        <action id="MapperChecker.CheckSelection" class="com.mapperchecker.idea.action.CheckActions$CheckSelectionAction"
+                text="检查所选范围的 Mapper 参数契约" description="检查所选文件、目录或 Module 中的 Mapper 参数契约">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>

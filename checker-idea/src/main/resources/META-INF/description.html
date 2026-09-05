@@ -1,0 +1,10 @@
+<p>MyBatis Mapper Checker verifies that the parameters declared or passed on the Java side match the parameters
+actually used by the Mapper SQL. Runs on demand and reports results in a tool window; iBatis 2 is supported as well.</p>
+<p>检查 MyBatis 项目中 Java 侧声明或传入的参数，与 Mapper SQL 实际使用的参数是否一致。兼容 iBatis 2。</p>
+<ul>
+    <li>Mapper 接口 <code>@Param</code> 声明了、SQL 里却没用的参数</li>
+    <li>Map / Bean 传参时多放的 key，包括由其他方法构造的参数对象</li>
+    <li>找不到对应 statement 的接口方法或字符串调用</li>
+    <li>同名 statement 多候选，无法确定目标</li>
+</ul>
+<p>手动触发，结果汇总到报告工具窗口，不在编辑器里实时标线。</p>
