@@ -1,0 +1,11 @@
+.gradle/
+build/
+out/
+.idea/
+*.iml
+.intellijPlatform/
+.kotlin/
+*.log
+.DS_Store
+build-verify.log
+samples/demo/target/

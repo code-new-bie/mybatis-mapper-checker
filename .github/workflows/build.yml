@@ -34,6 +34,9 @@ jobs:
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
+      - name: 赋予 gradlew 执行权限
+        run: chmod +x gradlew
+
       - name: 编译并测试
         run: ./gradlew build --no-daemon --stacktrace
 

@@ -1,0 +1,7 @@
+# 统一以 LF 入库，避免 Windows 下的 CRLF 告警与跨平台 diff 噪音
+* text=auto eol=lf
+*.bat text eol=crlf
+gradlew text eol=lf
+*.jar binary
+*.png binary
+*.zip binary
