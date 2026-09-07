@@ -108,6 +108,14 @@
 - [x] 纯 Java 规则与 DAL-010/011 全关时跳过整个 Java 文件遍历
 - [ ] 第三轮真机验证扫描耗时
 
+## include 的 `<property>` 替换（2026-09-07 真机反馈：片段里的条件全被报 DAL-001）
+- [x] `IncludeRef`：refid 与 `<property>` 名值对一起进索引（编码进同一字符串，索引格式不变，VERSION 3）
+- [x] `ParameterTemplate`：只把"参数名内部嵌 ${}"的原文存为模板（`#{${prefix}poiId}`、`<if test="${prefix}x">`），
+      `${alias}.col = #{poiId}` 这种照旧，不受影响
+- [x] `StatementAssembler`：展开片段时代入 property 再提取；外层 property 对内层片段可见，同名内层优先
+- [x] 占位符没给值 → statement 标 partiallyParsed，不报 DAL-001，进"无法解析"分组
+- [x] IncludePropertyEndToEndTest 9 例（自闭合 / 带 property / 片段套片段 / 跨文件全限定 refid / 拼参数名 / 拼列名 / 缺值 / 多层传递）
+
 ## 测试总数
 - checker-core：84
 - checker-idea：106（含 Heavy 4、端到端 39）

@@ -18,6 +18,8 @@ import java.util.Objects;
  * @param partiallyParsed  是否只解析了一部分（注解 SQL 含不可求值片段等）
  * @param location         位置
  * @param moduleName       模块名
+ * @param templates        参数名里嵌了 ${} 占位符的原文，需 include 的 property 替换后才能提取，
+ *                         见 {@link com.mapperchecker.core.contract.ParameterTemplate}
  */
 public record MapperStatement(
         StatementSource source,
@@ -30,7 +32,16 @@ public record MapperStatement(
         String parameterMapRef,
         boolean partiallyParsed,
         SourceLocation location,
-        String moduleName) {
+        String moduleName,
+        List<String> templates) {
+
+    /** 无模板的旧签名。 */
+    public MapperStatement(StatementSource source, String namespace, String id, StatementType type, String databaseId,
+                           List<ParameterReference> directParameters, List<String> includeRefs, String parameterMapRef,
+                           boolean partiallyParsed, SourceLocation location, String moduleName) {
+        this(source, namespace, id, type, databaseId, directParameters, includeRefs, parameterMapRef,
+                partiallyParsed, location, moduleName, List.of());
+    }
 
     public MapperStatement {
         Objects.requireNonNull(source, "source");
@@ -43,6 +54,7 @@ public record MapperStatement(
         includeRefs = includeRefs == null ? List.of() : List.copyOf(includeRefs);
         parameterMapRef = parameterMapRef == null ? "" : parameterMapRef;
         moduleName = moduleName == null ? "" : moduleName;
+        templates = templates == null ? List.of() : List.copyOf(templates);
     }
 
     /** namespace.id；无 namespace 时就是 id。 */

@@ -46,12 +46,22 @@ public final class IndexedElement {
     public final List<Param> params;
     /** parameterMap 的 property 列表；其他 kind 为空。 */
     public final List<String> properties;
+    /** 参数名里嵌了 ${} 的原文，展开 include 时再替换提取。 */
+    public final List<String> templates;
     public final int startOffset;
     public final int endOffset;
 
     public IndexedElement(Kind kind, StatementSource source, String namespace, String id, StatementType type,
                           String databaseId, String parameterMapRef, List<String> includeRefs, List<Param> params,
                           List<String> properties, int startOffset, int endOffset) {
+        this(kind, source, namespace, id, type, databaseId, parameterMapRef, includeRefs, params, properties,
+                List.of(), startOffset, endOffset);
+    }
+
+    public IndexedElement(Kind kind, StatementSource source, String namespace, String id, StatementType type,
+                          String databaseId, String parameterMapRef, List<String> includeRefs, List<Param> params,
+                          List<String> properties, List<String> templates, int startOffset, int endOffset) {
+        this.templates = List.copyOf(templates);
         this.kind = kind;
         this.source = source;
         this.namespace = namespace == null ? "" : namespace;
@@ -78,7 +88,7 @@ public final class IndexedElement {
                     SourceLocation.of(filePath, p.startOffset(), p.endOffset(), -1)));
         }
         return new MapperStatement(source, namespace, id, type, databaseId, refs, includeRefs, parameterMapRef,
-                false, SourceLocation.of(filePath, startOffset, endOffset, -1), moduleName);
+                false, SourceLocation.of(filePath, startOffset, endOffset, -1), moduleName, templates);
     }
 
     // FileBasedIndex 会校验序列化往返后的 equals / hashCode，必须按值比较。
@@ -95,13 +105,14 @@ public final class IndexedElement {
                 && startOffset == e.startOffset && endOffset == e.endOffset
                 && namespace.equals(e.namespace) && id.equals(e.id)
                 && databaseId.equals(e.databaseId) && parameterMapRef.equals(e.parameterMapRef)
-                && includeRefs.equals(e.includeRefs) && params.equals(e.params) && properties.equals(e.properties);
+                && includeRefs.equals(e.includeRefs) && params.equals(e.params) && properties.equals(e.properties)
+                && templates.equals(e.templates);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(kind, source, namespace, id, type, databaseId, parameterMapRef,
-                includeRefs, params, properties, startOffset, endOffset);
+                includeRefs, params, properties, templates, startOffset, endOffset);
     }
 
     @Override
@@ -134,6 +145,10 @@ public final class IndexedElement {
             }
             DataInputOutputUtil.writeINT(out, e.properties.size());
             for (String s : e.properties) {
+                IOUtil.writeUTF(out, s);
+            }
+            DataInputOutputUtil.writeINT(out, e.templates.size());
+            for (String s : e.templates) {
                 IOUtil.writeUTF(out, s);
             }
             DataInputOutputUtil.writeINT(out, e.startOffset);
@@ -169,10 +184,15 @@ public final class IndexedElement {
             for (int i = 0; i < n; i++) {
                 props.add(IOUtil.readUTF(in));
             }
+            n = DataInputOutputUtil.readINT(in);
+            List<String> templates = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+                templates.add(IOUtil.readUTF(in));
+            }
             int start = DataInputOutputUtil.readINT(in);
             int end = DataInputOutputUtil.readINT(in);
             return new IndexedElement(kind, source, namespace, id, type, databaseId, parameterMapRef,
-                    includes, params, props, start, end);
+                    includes, params, props, templates, start, end);
         }
     };
 }

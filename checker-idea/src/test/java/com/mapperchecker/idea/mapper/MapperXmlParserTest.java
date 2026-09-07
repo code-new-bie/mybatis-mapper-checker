@@ -135,7 +135,11 @@ public class MapperXmlParserTest extends BasePlatformTestCase {
                 </mapper>
                 """);
         IndexedElement q = byId(f, "q");
-        assertEquals(List.of("B.cols"), q.includeRefs);
+        // refid 与 <property> 一起存下来，展开片段时才有值可替换
+        assertEquals(1, q.includeRefs.size());
+        com.mapperchecker.core.model.IncludeRef ref = com.mapperchecker.core.model.IncludeRef.parse(q.includeRefs.get(0));
+        assertEquals("B.cols", ref.refid());
+        assertEquals(java.util.Map.of("alias", "${a}"), ref.properties());
         assertTrue(names(q).isEmpty());
     }
 

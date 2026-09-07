@@ -446,7 +446,34 @@ Resolver 阶段  Order.queryOrder  实际参数 = 自身直接参数 ∪ Common.
 
 `<include refid="${dynamic}">` 目标不可静态确定：statement 标 UNRESOLVED，原因 DYNAMIC_INCLUDE。
 
-`<include refid="x"><property name="k" value="v"/></include>` 中 `v` 的 `${}` 是局部替换，不计入参数。
+#### `<property>` 替换（2026-09-07 真机反馈后重做）
+
+`<include refid="x"><property name="k" value="v"/></include>` 的 `k` 在片段里以 `${k}` 出现。分两种，必须区别对待：
+
+```text
+① ${k} 只是拼 SQL          <sql> AND ${alias}.poi_id = #{poiId} </sql>
+   → 参数名跟 ${} 无关，照常提取 poiId，${alias} 按替换型参数处理。什么都不用做。
+
+② ${k} 拼在参数名里面      <sql> <if test="${prefix}poiId != null"> AND poi_id = #{${prefix}poiId} </if> </sql>
+                           <include refid="cond"><property name="prefix" value="query."/></include>
+   → 提取阶段拿不到任何参数名。第一版在这里静默失败：片段的参数一个都收不到，
+     语句又没标 partiallyParsed，于是 Java 侧参数全被判成"未使用"，DAL-001 满屏误报。
+```
+
+②的正确做法是真的做替换。片段是"单文件事实"，而 `${k}` 的值只有引用点知道，所以：
+
+```text
+Index 阶段    include 存 refid + <property> 名值对（编码进同一个字符串，索引格式不变，VERSION 3）
+              片段里"参数名内嵌 ${}"的原文整段存进 templates，不做提取
+              判定用 ParameterTemplate.hasPlaceholderInsideParam：只有 #{...} 内部出现 ${ 才算，
+              避免把 ①（满项目都是）平白降级成部分解析
+
+Resolver 阶段 展开 include 时把 property 代入 templates，再按普通规则提取
+              外层 property 继续对内层片段可见，同名以内层 include 为准
+              代入后仍有 ${} 没给值 → statement 标 partiallyParsed，不报 DAL-001，进"无法解析"分组
+```
+
+原则还是那句：宁可不报，也不误报。
 
 ### 8.5 参数引用归一化
 
@@ -759,6 +786,7 @@ DAL-001 候选 = Java 侧 rootName（含别名组）集合 − Mapper 侧 rootNa
 - 别名组内任一名字被 Mapper 引用，即视为已使用。
 - 精确匹配，大小写敏感。
 - Java 侧名字找不到、但 Mapper 侧存在仅大小写不同的名字：仍报 DAL-001，备注"Mapper 中存在 'poiid'，疑似大小写不一致"。
+- Java 侧声明了 `dataStatuses`，而 Mapper 里写的是 `query.dataStatuses`（同名但带对象前缀）：仍报 DAL-001，备注说明两种可能——该值本就该通过 `query` 传入（此处 `@Param` 多余），或 `@Param` 名字与 SQL 对不上（那样 SQL 里那个条件永远不成立）。反向情形（Java 侧是 `query.x`，Mapper 里直接写 `x`）同样给备注。2026-09-07 真机反馈：不给这条备注，报告看起来像"明明用了却说没用"。
 - 命中忽略配置（第 15 节）的不进入候选。
 - statement 为 partiallyParsed 时不报 DAL-001，只做 DAL-005 / DAL-006。
 - 单标量参数不报 DAL-001。

@@ -30,7 +30,8 @@ import java.util.Map;
 public final class MapperStatementIndex extends FileBasedIndexExtension<String, IndexedElement> {
 
     public static final ID<String, IndexedElement> NAME = ID.create("com.mapperchecker.MapperStatementIndex");
-    private static final int VERSION = 2;
+    // 3：IndexedElement 增加 templates（参数名里嵌 ${} 的原文）与 include 的 property 编码
+    private static final int VERSION = 3;
 
     @Override
     public @NotNull ID<String, IndexedElement> getName() {

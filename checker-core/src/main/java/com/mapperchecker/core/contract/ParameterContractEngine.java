@@ -98,6 +98,34 @@ public final class ParameterContractEngine {
         return issues;
     }
 
+    /**
+     * 声明了 {@code dataStatuses}，而 Mapper 里写的是 {@code query.dataStatuses}：
+     * 要么这个值本该通过 query 对象传，要么 @Param 名字和 SQL 对不上（此时 SQL 里那个条件永远不成立）。
+     * 两种都值得说清楚，否则报告看起来像"明明用了却说没用"。
+     */
+    private static String findNestedUsage(ParameterReference ref, ResolvedStatement statement) {
+        for (String candidate : ref.candidateNames()) {
+            for (String path : statement.parameterPaths()) {
+                int dot = path.lastIndexOf('.');
+                if (dot > 0 && path.substring(dot + 1).equals(candidate) && path.indexOf('.') > 0) {
+                    return path;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 反过来：Java 侧是 query.dataStatuses，Mapper 里直接写 dataStatuses。 */
+    private static String findFlatUsage(ParameterReference ref, Set<String> mapperNames) {
+        String path = ref.propertyPath();
+        int dot = path.lastIndexOf('.');
+        if (dot <= 0) {
+            return null;
+        }
+        String last = path.substring(dot + 1);
+        return mapperNames.contains(last) ? last : null;
+    }
+
     private static boolean isRootUsed(ParameterReference ref, Set<String> mapperNames) {
         for (String name : ref.candidateNames()) {
             if (mapperNames.contains(name)) {
@@ -139,6 +167,15 @@ public final class ParameterContractEngine {
                 remark.append(' ');
             }
             remark.append(Messages.get("remark.case.mismatch", caseVariant));
+        }
+        String sameName = property ? findFlatUsage(ref, mapperNames) : findNestedUsage(ref, statement);
+        if (sameName != null) {
+            if (remark.length() > 0) {
+                remark.append(' ');
+            }
+            remark.append(property
+                    ? Messages.get("remark.flat.usage", sameName)
+                    : Messages.get("remark.nested.usage", sameName, sameName.substring(0, sameName.indexOf('.'))));
         }
 
         return new ContractIssue(

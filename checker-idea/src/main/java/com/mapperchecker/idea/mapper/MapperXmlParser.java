@@ -12,6 +12,8 @@ import com.intellij.psi.xml.XmlText;
 import com.mapperchecker.core.model.ParameterSourceType;
 import com.mapperchecker.core.model.StatementType;
 import com.mapperchecker.core.naming.OgnlIdentifierExtractor;
+import com.mapperchecker.core.contract.ParameterTemplate;
+import com.mapperchecker.core.model.IncludeRef;
 import com.mapperchecker.core.naming.ParameterNameNormalizer;
 import com.mapperchecker.core.naming.SqlParameterExtractor;
 import com.mapperchecker.idea.index.IndexedElement;
@@ -19,6 +21,8 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -77,7 +81,7 @@ public final class MapperXmlParser {
                     dialect.source(), namespace, id, type,
                     attr(tag, "databaseId"),
                     attr(tag, "parameterMap"),
-                    collector.includeRefs, collector.params, List.of(),
+                    collector.includeRefs, collector.params, List.of(), collector.templates,
                     range.getStartOffset(), range.getEndOffset()));
         }
         return new ParsedMapperFile(dialect, namespace, elements);
@@ -112,6 +116,8 @@ public final class MapperXmlParser {
         final MapperDialect dialect;
         final List<IndexedElement.Param> params = new ArrayList<>();
         final List<String> includeRefs = new ArrayList<>();
+        /** 参数名里嵌了 ${} 的原文，等 include 的 property 替换后再提取。 */
+        final List<String> templates = new ArrayList<>();
         /** bind 定义的名字对整个 statement 生效（简化处理）。 */
         final Set<String> bindNames = new LinkedHashSet<>();
 
@@ -136,9 +142,17 @@ public final class MapperXmlParser {
                 case "include" -> {
                     String refid = attr(tag, "refid");
                     if (!refid.isEmpty()) {
-                        includeRefs.add(refid);
+                        // <property> 是给片段里 ${} 用的替换值，跟着 refid 一起存，展开时才用得上
+                        Map<String, String> props = new LinkedHashMap<>();
+                        for (XmlTag p : tag.findSubTags("property")) {
+                            String pn = attr(p, "name");
+                            if (!pn.isEmpty()) {
+                                props.put(pn, attr(p, "value"));
+                            }
+                        }
+                        includeRefs.add(IncludeRef.encode(refid, props));
                     }
-                    // <include> 内的 <property> 是局部替换，不递归
+                    // <property> 本身不是参数引用，不递归
                     return;
                 }
                 case "foreach" -> {
@@ -174,6 +188,11 @@ public final class MapperXmlParser {
         private void collectText(XmlText text, Set<String> locals) {
             String value = text.getValue();
             if (value == null || value.isEmpty()) {
+                return;
+            }
+            // #{${prefix}poiId} 这种：参数名要等 include 的 property 替换后才知道，先存原文
+            if (dialect == MapperDialect.MYBATIS && ParameterTemplate.hasPlaceholderInsideParam(value)) {
+                templates.add(ParameterTemplate.encode(ParameterTemplate.TEXT, value));
                 return;
             }
             List<SqlParameterExtractor.Match> matches = dialect == MapperDialect.MYBATIS
@@ -230,6 +249,11 @@ public final class MapperXmlParser {
         private void addOgnlParams(XmlTag tag, String attrName, Set<String> locals) {
             XmlAttribute a = tag.getAttribute(attrName);
             if (a == null || a.getValue() == null) {
+                return;
+            }
+            // <if test="${prefix}poiId != null">：同上，替换后才能当 OGNL 解析
+            if (dialect == MapperDialect.MYBATIS && a.getValue().contains("${")) {
+                templates.add(ParameterTemplate.encode(ParameterTemplate.TEST, a.getValue()));
                 return;
             }
             Set<String> excluded = new HashSet<>(locals);

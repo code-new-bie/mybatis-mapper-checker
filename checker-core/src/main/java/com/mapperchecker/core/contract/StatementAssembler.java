@@ -8,7 +8,11 @@ import com.mapperchecker.core.model.SourceLocation;
 import com.mapperchecker.core.model.StatementType;
 
 import java.util.ArrayList;
+import com.mapperchecker.core.model.IncludeRef;
+
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -62,7 +66,7 @@ public final class StatementAssembler {
             locations.add(def.location());
             library |= repository.isLibraryLocation(def.location());
             partial |= def.partiallyParsed();
-            partial |= collect(def, def.namespace(), new HashSet<>(), names, refs, 0);
+            partial |= collect(def, def.namespace(), Map.of(), new HashSet<>(), names, refs, 0);
         }
         Set<String> paths = new LinkedHashSet<>();
         for (ParameterReference r : refs) {
@@ -76,7 +80,7 @@ public final class StatementAssembler {
      *
      * @return 是否遇到循环或不可解析的 include（部分解析）
      */
-    private boolean collect(MapperStatement st, String namespace, Set<String> visiting,
+    private boolean collect(MapperStatement st, String namespace, Map<String, String> properties, Set<String> visiting,
                             Set<String> names, List<ParameterReference> refs, int depth) {
         String key = st.fullId();
         if (!visiting.add(key)) {
@@ -86,6 +90,21 @@ public final class StatementAssembler {
         for (ParameterReference ref : st.directParameters()) {
             names.add(ref.rootName());
             refs.add(ref);
+        }
+        // 参数名里嵌了 ${} 的：用 include 传进来的 property 替换后再提取；给不全就只能算部分解析
+        for (String template : st.templates()) {
+            List<ParameterTemplate.Extracted> resolved = ParameterTemplate.resolve(template, properties);
+            if (resolved == null) {
+                partial = true;
+                continue;
+            }
+            for (ParameterTemplate.Extracted e : resolved) {
+                ParameterReference ref = ParameterReference.of(
+                        com.mapperchecker.core.naming.ParameterNameNormalizer.rootName(e.path()),
+                        e.path(), e.sourceType(), st.location());
+                names.add(ref.rootName());
+                refs.add(ref);
+            }
         }
         if (!st.parameterMapRef().isEmpty()) {
             List<String> props = repository.findParameterMapProperties(st.parameterMapRef(), namespace);
@@ -97,7 +116,9 @@ public final class StatementAssembler {
                 refs.add(ParameterReference.of(p, ParameterSourceType.XML_PARAMETER_MAP, st.location()));
             }
         }
-        for (String refid : st.includeRefs()) {
+        for (String encoded : st.includeRefs()) {
+            IncludeRef include = IncludeRef.parse(encoded);
+            String refid = include.refid();
             if (refid.contains("${") || refid.contains("$") && refid.indexOf('$') != refid.lastIndexOf('$')) {
                 partial = true; // 动态 refid
                 continue;
@@ -111,8 +132,13 @@ public final class StatementAssembler {
                 partial = true;
                 continue;
             }
+            // 外层传进来的 property 继续可见，本次 include 的同名值覆盖它（片段套片段时按 MyBatis 的直觉来）
+            Map<String, String> childProps = properties.isEmpty() ? include.properties() : new LinkedHashMap<>(properties);
+            if (!properties.isEmpty()) {
+                childProps.putAll(include.properties());
+            }
             for (MapperStatement frag : fragments) {
-                partial |= collect(frag, frag.namespace(), visiting, names, refs, depth + 1);
+                partial |= collect(frag, frag.namespace(), childProps, visiting, names, refs, depth + 1);
             }
         }
         visiting.remove(key);
