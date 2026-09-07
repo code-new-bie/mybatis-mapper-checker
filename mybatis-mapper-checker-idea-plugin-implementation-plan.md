@@ -1057,6 +1057,21 @@ gutter icon 默认关闭。导航是被动能力不算干扰，但 gutter icon �
 
 关键点：FileBasedIndex 定位；`ReadAction.nonBlocking` 分片；`ProgressIndicator` 取消；运行级缓存；`SmartPsiElementPointer` 保存报告位置。
 
+### 17.1 真机反馈：扫描太慢（2026-09-07）
+
+大项目上第一版慢在四处，都是"看似一次搜索，实际乘以了几千"的地方：
+
+| 慢在哪 | 原因 | 改法 |
+|---|---|---|
+| 字符串调用发现 | 对 SqlSession / SqlSessionTemplate / SqlMapClient(Template) 的**每个重载**各做一次全项目引用搜索，几十次；`update` / `insert` / `delete` 是满项目都有的词，平台要把每一处都解引用 | 同一个词只查一次索引拿候选文件，每个文件只解析一次，命中判定仍走 `StringCallInvocationExtractor.extract`（先比方法名、再看首参是不是 String，最后才解引用）。`insert` / `update` / `delete` / `select` 不作种子词，但候选文件里照常识别 |
+| DAL-010 判断"有没有人 set" | 逐实体逐属性做全项目引用搜索：`setStatus` 这类名字满项目都是，且大多解析到别的类，`findFirst` 也要翻很多文件 | 扫描 Java 文件时顺手登记 `x.setFoo(...)` → `实体#属性` 查表；查不到的少数属性才回退引用搜索，且只有 DAL-011 开启时才需要区分 |
+| Query 类清单 | `getAllClassNames()` 把依赖 jar 的名字一起给出来，Hibernate / JPA 的 `CriteriaQuery`、`NativeQuery` 都命中 Query 后缀，拿去做全项目词搜索纯浪费；且 DAL-021 与候选文件各算一遍 | `QueryClassIndex` 只保留源码里真实存在的 Query 类，一次运行只算一次，两处共用 |
+| 逐条提交读操作 | 每个接口 / 调用点 / 文件各提交一次 `ReadAction.nonBlocking(...).executeSynchronously()`，几千次线程往返 | 按 50ms 时间片批量处理；被写操作打断时只重跑当前这一小批 |
+
+另外 `BeanPropertyCollector.collect` 走 `CachedValuesManager` 缓存（同一实体会被多条 statement、多条规则反复问）；四条纯 Java 规则与 DAL-010/011 全关时，整个 Java 文件遍历直接跳过。
+
+代价（已接受）：只用 `insert` / `update` / `delete` 且既不提到 receiver 类型名、也没有任何 `selectXxx` / `queryForXxx` 的 DAO 文件会漏掉；关掉 DAL-011 时，set 发生在扫描范围之外的属性不再报 DAL-010。
+
 ---
 
 ## 18. 包结构

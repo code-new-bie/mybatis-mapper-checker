@@ -73,18 +73,35 @@ public final class JavaRules {
     private final Reporter reporter;
     /** 被反射拷贝当作目标的类全限定名，可为 null（实时 Inspection 不需要）。 */
     private final @Nullable Set<String> reflectiveCopyTargets;
+    /** 扫描过程中顺带登记的 setter 调用："实体全限定名#属性" → 调用位置，供 DAL-010 免去引用搜索。 */
+    private final @Nullable Map<String, String> setterUsages;
+    private @Nullable QueryClassIndex queryClassIndex;
 
     public JavaRules(@NotNull Project project, @NotNull CheckSettings settings, @NotNull Reporter reporter) {
-        this(project, settings, reporter, null);
+        this(project, settings, reporter, null, null);
     }
 
     public JavaRules(@NotNull Project project, @NotNull CheckSettings settings, @NotNull Reporter reporter,
                      @Nullable Set<String> reflectiveCopyTargets) {
+        this(project, settings, reporter, reflectiveCopyTargets, null);
+    }
+
+    public JavaRules(@NotNull Project project, @NotNull CheckSettings settings, @NotNull Reporter reporter,
+                     @Nullable Set<String> reflectiveCopyTargets, @Nullable Map<String, String> setterUsages) {
         this.project = project;
         this.settings = settings;
         this.rules = settings.rules();
         this.reporter = reporter;
         this.reflectiveCopyTargets = reflectiveCopyTargets;
+        this.setterUsages = setterUsages;
+    }
+
+    /** 共享的 Query 类清单（只算一次）。 */
+    public @NotNull QueryClassIndex queryClassIndex() {
+        if (queryClassIndex == null) {
+            queryClassIndex = new QueryClassIndex(project, rules);
+        }
+        return queryClassIndex;
     }
 
     // ---------------------------------------------------------------- DAL-022
@@ -140,9 +157,40 @@ public final class JavaRules {
             if (settings.isEnabled(RuleId.DAL_004)) {
                 checkCopyArgumentOrder(call);
             }
-        } else if (settings.isEnabled(RuleId.DAL_030) && name.startsWith("set") && call.getArgumentList().getExpressionCount() == 1) {
-            checkCrossLayerRename(call);
+        } else if (name.startsWith("set") && call.getArgumentList().getExpressionCount() == 1) {
+            recordSetterUsage(call, name);
+            if (settings.isEnabled(RuleId.DAL_030)) {
+                checkCrossLayerRename(call);
+            }
         }
+    }
+
+    /**
+     * 登记 {@code x.setFoo(v)}：DAL-010 要判断"有没有人 set 过"，逐属性做全项目引用搜索代价极高
+     * （setStatus 这类名字满项目都是，每个候选文件都要解析、解引用）。这里在本来就要遍历的文件上顺手记下来，
+     * 让 DAL-010 走查表；查不到的少数属性才回退到引用搜索。
+     */
+    private void recordSetterUsage(PsiMethodCallExpression call, String setterName) {
+        if (setterUsages == null) {
+            return;
+        }
+        String prop = ParameterNameNormalizer.setterToProperty(setterName);
+        if (prop == null || prop.isEmpty()) {
+            return;
+        }
+        PsiExpression qualifier = call.getMethodExpression().getQualifierExpression();
+        PsiClass owner;
+        if (qualifier != null) {
+            // 用限定符的声明类型，比解引用方法便宜
+            owner = BeanPropertyCollector.expandableBeanClass(qualifier.getType());
+        } else {
+            PsiMethod enclosing = PsiTreeUtil.getParentOfType(call, PsiMethod.class);
+            owner = enclosing == null ? null : enclosing.getContainingClass();
+        }
+        if (owner == null || owner.getQualifiedName() == null) {
+            return;
+        }
+        setterUsages.putIfAbsent(owner.getQualifiedName() + "#" + prop, Locations.of(call).display());
     }
 
     /** 记录反射拷贝的目标类型：已登记参数顺序的按目标位置取，未登记的两个实参都算。 */
@@ -338,20 +386,11 @@ public final class JavaRules {
         if (!settings.isEnabled(RuleId.DAL_021)) {
             return;
         }
-        PsiShortNamesCache cache = PsiShortNamesCache.getInstance(project);
-        ProjectFileIndex index = ProjectFileIndex.getInstance(project);
-        for (String name : cache.getAllClassNames()) {
-            if (!rules.isQueryClassName(name)) {
-                continue;
-            }
+        for (Map.Entry<String, List<PsiClass>> named : queryClassIndex().sourceQueryClasses(scope).entrySet()) {
+            String name = named.getKey();
             ProgressManager.checkCanceled();
             Map<String, PsiClass> byFqn = new LinkedHashMap<>();
-            for (PsiClass cls : cache.getClassesByName(name, scope)) {
-                PsiFile f = cls.getContainingFile();
-                VirtualFile vf = f == null ? null : f.getVirtualFile();
-                if (vf == null || !index.isInSourceContent(vf) || cls.getQualifiedName() == null) {
-                    continue;
-                }
+            for (PsiClass cls : named.getValue()) {
                 byFqn.putIfAbsent(cls.getQualifiedName(), cls);
             }
             if (byFqn.size() < 2) {

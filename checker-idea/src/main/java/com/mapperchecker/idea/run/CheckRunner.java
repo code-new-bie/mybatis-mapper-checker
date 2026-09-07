@@ -61,8 +61,11 @@ public final class CheckRunner {
         // 纯 Java 规则的候选文件：Module / 项目范围用词索引找，文件范围就是所选文件
         GlobalSearchScope discoveryScope = scope.discoveryScope(project);
         List<PsiFile> javaFiles = read(indicator, () -> {
+            if (!needsJavaFileScan()) {
+                return List.<PsiFile>of();
+            }
             if (discoveryScope != null) {
-                return discovery.findJavaFilesForRules(discoveryScope, settings.rules(), indicator);
+                return discovery.findJavaFilesForRules(discoveryScope, engine.javaRules().queryClassIndex(), indicator);
             }
             List<PsiFile> out = new ArrayList<>();
             PsiManager pm = PsiManager.getInstance(project);
@@ -85,33 +88,21 @@ public final class CheckRunner {
                     found.mapperInterfaces().size(), found.stringCalls().size()));
         }
 
-        for (PsiClass mapper : found.mapperInterfaces()) {
-            progress(indicator, ++done, total);
-            read(indicator, () -> {
-                if (mapper.isValid()) {
-                    engine.checkMapperInterface(mapper, callSiteScope);
-                }
-                return null;
-            });
-        }
-        for (PsiMethodCallExpression call : found.stringCalls()) {
-            progress(indicator, ++done, total);
-            read(indicator, () -> {
-                if (call.isValid()) {
-                    engine.checkStringCall(call);
-                }
-                return null;
-            });
-        }
-        for (PsiFile file : javaFiles) {
-            progress(indicator, ++done, total);
-            read(indicator, () -> {
-                if (file.isValid()) {
-                    engine.javaRules().checkJavaFile(file);
-                }
-                return null;
-            });
-        }
+        done = runBatched(found.mapperInterfaces(), done, total, indicator, mapper -> {
+            if (mapper.isValid()) {
+                engine.checkMapperInterface(mapper, callSiteScope);
+            }
+        });
+        done = runBatched(found.stringCalls(), done, total, indicator, call -> {
+            if (call.isValid()) {
+                engine.checkStringCall(call);
+            }
+        });
+        done = runBatched(javaFiles, done, total, indicator, file -> {
+            if (file.isValid()) {
+                engine.javaRules().checkJavaFile(file);
+            }
+        });
         if (discoveryScope != null) {
             // 全局规则：Query 类级聚合（DAL-010 / 011），要等所有 Mapper 与 Java 文件都看完
             progress(indicator, ++done, total);
@@ -135,6 +126,51 @@ public final class CheckRunner {
         CheckResult result = read(indicator, () -> ctx.finish(scope.displayName(), reported, exempted));
         return new Outcome(result, reported, exempted);
     }
+
+    /** 纯 Java 规则与 DAL-010/011 都关掉时，整个 Java 文件遍历可以省掉。 */
+    private boolean needsJavaFileScan() {
+        for (com.mapperchecker.core.model.RuleId r : List.of(
+                com.mapperchecker.core.model.RuleId.DAL_004, com.mapperchecker.core.model.RuleId.DAL_020,
+                com.mapperchecker.core.model.RuleId.DAL_030, com.mapperchecker.core.model.RuleId.DAL_010,
+                com.mapperchecker.core.model.RuleId.DAL_011)) {
+            if (settings.isEnabled(r)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 一次读操作里连续处理多个条目，最多 {@link #BATCH_NANOS}。逐条提交非阻塞读操作的开销在几千个条目上很可观，
+     * 但一次全做完又会长时间占着读锁、被写操作打断后整批重来，所以按时间切片。
+     *
+     * @return 新的已完成计数
+     */
+    private <T> int runBatched(@NotNull List<T> items, int done, int total, @Nullable ProgressIndicator indicator,
+                               @NotNull java.util.function.Consumer<T> action) {
+        int index = 0;
+        while (index < items.size()) {
+            final int from = index;
+            int[] processed = new int[1];
+            read(indicator, () -> {
+                processed[0] = 0; // 被写操作打断重跑时从头再来，不能沿用上一次的计数
+                long deadline = System.nanoTime() + BATCH_NANOS;
+                for (int i = from; i < items.size(); i++) {
+                    action.accept(items.get(i));
+                    processed[0] = i - from + 1;
+                    if (System.nanoTime() >= deadline) {
+                        break;
+                    }
+                }
+                return null;
+            });
+            index = from + Math.max(1, processed[0]);
+            progress(indicator, done + Math.min(index, items.size()), total);
+        }
+        return done + items.size();
+    }
+
+    private static final long BATCH_NANOS = 50L * 1000 * 1000;
 
     private <T> T read(@Nullable ProgressIndicator indicator, @NotNull java.util.concurrent.Callable<T> action) {
         // 已在读操作内（Inspect Code 批量模式、测试）：直接执行，避免嵌套非阻塞读操作

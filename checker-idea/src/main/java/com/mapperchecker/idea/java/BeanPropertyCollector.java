@@ -58,6 +58,13 @@ public final class BeanPropertyCollector {
      * @return 属性名 → 锚点（优先字段，其次 setter，再 getter），保持声明顺序；父类属性在后
      */
     public static @NotNull Map<String, PsiElement> collect(@NotNull PsiClass beanClass) {
+        // 同一个实体会被多条 statement、多条规则反复问，走平台缓存，PSI 一改自动失效
+        return com.intellij.psi.util.CachedValuesManager.getCachedValue(beanClass, () ->
+                com.intellij.psi.util.CachedValueProvider.Result.create(collectUncached(beanClass),
+                        com.intellij.psi.util.PsiModificationTracker.MODIFICATION_COUNT));
+    }
+
+    private static @NotNull Map<String, PsiElement> collectUncached(@NotNull PsiClass beanClass) {
         Map<String, PsiElement> result = new LinkedHashMap<>();
         PsiClass cls = beanClass;
         int guard = 0;

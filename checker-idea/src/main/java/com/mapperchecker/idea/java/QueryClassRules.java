@@ -92,6 +92,15 @@ public final class QueryClassRules {
      */
     public void check(@NotNull Map<String, Usage> usages, @NotNull Set<String> reflectiveCopyTargets,
                       @Nullable ProgressIndicator indicator) {
+        check(usages, reflectiveCopyTargets, Map.of(), indicator);
+    }
+
+    /**
+     * @param setterUsages 扫描阶段登记的 setter 调用（"实体全限定名#属性" → 位置）。命中即知道有人 set，
+     *                     省掉一次全项目引用搜索；没命中的属性才回退到搜索，且只在 DAL-011 开启时才需要区分
+     */
+    public void check(@NotNull Map<String, Usage> usages, @NotNull Set<String> reflectiveCopyTargets,
+                      @NotNull Map<String, String> setterUsages, @Nullable ProgressIndicator indicator) {
         boolean want010 = settings.isEnabled(RuleId.DAL_010);
         boolean want011 = settings.isEnabled(RuleId.DAL_011);
         if (!want010 && !want011) {
@@ -126,8 +135,23 @@ public final class QueryClassRules {
                     // 没有 setter（Lombok 未装插件 / 只读属性）：既判不了 set 也判不了死，不下结论
                     continue;
                 }
-                PsiReference firstCaller = MethodReferencesSearch.search(setter, scope, false).findFirst();
                 String remark = copied ? MapperCheckerBundle.message("remark.reflective.copy.target") : "";
+                // 快路径：扫描阶段已经见过 x.setProp(...)
+                String recorded = setterUsages.get(fqn + "#" + prop);
+                if (recorded != null) {
+                    if (want010) {
+                        String message = MapperCheckerBundle.message("issue.DAL-010", entity, prop, recorded, u.statementIds.size());
+                        report(RuleId.DAL_010, Confidence.HIGH, message, remark, prop, fqn, e.getValue(), u);
+                    }
+                    continue;
+                }
+                if (!want011) {
+                    // 只开 DAL-010 时，没登记到就当没人 set（set 该实体的文件必然提到过它的类名，已在扫描范围内），
+                    // 不值得为此做一次全项目引用搜索
+                    continue;
+                }
+                // 慢路径：只有"看起来是死字段"的少数属性才走引用搜索，确认确实没人 set
+                PsiReference firstCaller = MethodReferencesSearch.search(setter, scope, false).findFirst();
                 if (firstCaller != null) {
                     if (!want010) {
                         continue;
@@ -136,9 +160,6 @@ public final class QueryClassRules {
                     String message = MapperCheckerBundle.message("issue.DAL-010", entity, prop, example, u.statementIds.size());
                     report(RuleId.DAL_010, Confidence.HIGH, message, remark, prop, fqn, e.getValue(), u);
                 } else {
-                    if (!want011) {
-                        continue;
-                    }
                     String message = MapperCheckerBundle.message("issue.DAL-011", entity, prop, u.statementIds.size());
                     report(RuleId.DAL_011, Confidence.LOW, message, remark, prop, fqn, e.getValue(), u);
                 }

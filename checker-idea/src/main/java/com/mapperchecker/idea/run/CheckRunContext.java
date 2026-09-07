@@ -66,6 +66,8 @@ public final class CheckRunContext {
     public final Map<String, com.mapperchecker.idea.java.QueryClassRules.Usage> queryUsages = new java.util.LinkedHashMap<>();
     /** 被 copyProperties 当作目标的实体全限定名，字段来源静态看不见。 */
     public final Set<String> reflectiveCopyTargets = new HashSet<>();
+    /** 扫描过程中见到的 setter 调用："实体全限定名#属性" → 位置，供 DAL-010 免去逐属性引用搜索。 */
+    public final Map<String, String> setterUsages = new HashMap<>();
 
     public CheckRunContext(@NotNull Project project, @NotNull CheckSettings settings) {
         this.project = project;

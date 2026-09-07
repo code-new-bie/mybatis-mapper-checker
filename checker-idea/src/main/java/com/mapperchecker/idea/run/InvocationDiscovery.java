@@ -9,6 +9,7 @@ import com.intellij.psi.JavaPsiFacade;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiFile;
+import com.intellij.psi.search.PsiSearchHelper;
 import com.intellij.psi.PsiJavaFile;
 import com.intellij.psi.PsiManager;
 import com.intellij.psi.PsiMethod;
@@ -16,7 +17,6 @@ import com.intellij.psi.PsiMethodCallExpression;
 import com.intellij.psi.PsiReference;
 import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.search.searches.AnnotatedElementsSearch;
-import com.intellij.psi.search.searches.MethodReferencesSearch;
 import com.intellij.psi.util.PsiTreeUtil;
 import com.mapperchecker.idea.MapperCheckerBundle;
 import com.mapperchecker.idea.index.MapperNamespaceIndex;
@@ -41,6 +41,9 @@ public final class InvocationDiscovery {
     /** 发现结果。 */
     public record Found(List<PsiClass> mapperInterfaces, List<PsiMethodCallExpression> stringCalls) {
     }
+
+    /** 不适合当作文件种子词的方法名：太常见，索引命中等于全项目。 */
+    private static final Set<String> GENERIC_CALL_NAMES = Set.of("insert", "update", "delete", "select");
 
     private final Project project;
 
@@ -97,9 +100,12 @@ public final class InvocationDiscovery {
             }
         }
 
-        // 4. 字符串调用：对目标方法做引用搜索。这是整个发现阶段最慢的一步（项目级引用搜索，
-        // 逐个方法做），先收集齐目标方法算出总数，再按方法逐个报进度，让用户看到具体搜到哪个方法了。
-        List<PsiMethod> targetMethods = new ArrayList<>();
+        // 4. 字符串调用：先用词索引把可能的文件筛出来（纯索引查询，不解引用），再在这些文件上按 AST 匹配。
+        // 原来是给 SqlSession / SqlSessionTemplate / SqlMapClient(Template) 的每个重载各做一次全项目引用搜索：
+        // 四种类型的同名重载加起来几十个，而 update / insert / delete 这种词满项目都是，平台要把每一处都解引用，
+        // 是整个扫描最慢的一步。现在同一个词只查一次索引，每个候选文件只解析一次，命中判定仍走 extract。
+        Set<String> methodNames = new LinkedHashSet<>();
+        Set<String> seedWords = new LinkedHashSet<>();
         Set<String> receiverTypes = new LinkedHashSet<>(MyBatisNames.SQL_SESSION_TYPES);
         receiverTypes.addAll(MyBatisNames.SQLMAP_CLIENT_TYPES);
         for (String type : receiverTypes) {
@@ -107,30 +113,54 @@ public final class InvocationDiscovery {
             if (cls == null) {
                 continue;
             }
+            seedWords.add(type.substring(type.lastIndexOf('.') + 1));
             for (PsiMethod m : cls.getAllMethods()) {
                 String name = m.getName();
                 if (MyBatisNames.SQL_SESSION_METHODS.contains(name) || MyBatisNames.SQLMAP_CLIENT_METHODS.contains(name)) {
-                    targetMethods.add(m);
+                    methodNames.add(name);
                 }
             }
         }
-        List<PsiMethodCallExpression> calls = new ArrayList<>();
-        Set<PsiMethodCallExpression> seen = new LinkedHashSet<>();
-        int total = targetMethods.size();
-        int done = 0;
-        for (PsiMethod m : targetMethods) {
-            done++;
-            if (indicator != null) {
-                indicator.checkCanceled();
-                indicator.setText2(MapperCheckerBundle.message("task.discovery.methodRef", done, total, describe(m)));
-            } else {
-                ProgressManager.checkCanceled();
+        // insert / update / delete / select 这类词不适合当种子（满项目都是），但候选文件里仍然照常识别：
+        // 用到它们的 DAO 几乎都会同时出现 receiver 类型名或某个 selectXxx / queryForXxx
+        for (String name : methodNames) {
+            if (!GENERIC_CALL_NAMES.contains(name)) {
+                seedWords.add(name);
             }
-            for (PsiReference ref : MethodReferencesSearch.search(m, sourceScope, true).findAll()) {
-                PsiElement e = ref.getElement();
-                PsiMethodCallExpression call = PsiTreeUtil.getParentOfType(e, PsiMethodCallExpression.class, false);
-                if (call != null && seen.add(call) && StringCallInvocationExtractor.extract(call) != null) {
-                    calls.add(call);
+        }
+        List<PsiMethodCallExpression> calls = new ArrayList<>();
+        if (!methodNames.isEmpty()) {
+            PsiSearchHelper helper = PsiSearchHelper.getInstance(project);
+            Set<PsiFile> candidates = new LinkedHashSet<>();
+            int done = 0;
+            for (String word : seedWords) {
+                done++;
+                if (indicator != null) {
+                    indicator.checkCanceled();
+                    indicator.setText2(MapperCheckerBundle.message("task.discovery.stringCallWord", done, seedWords.size(), word));
+                } else {
+                    ProgressManager.checkCanceled();
+                }
+                helper.processAllFilesWithWord(word, sourceScope, f -> {
+                    if (f instanceof PsiJavaFile) {
+                        candidates.add(f);
+                    }
+                    return true;
+                }, true);
+            }
+            int scanned = 0;
+            for (PsiFile f : candidates) {
+                scanned++;
+                if (indicator != null) {
+                    indicator.checkCanceled();
+                    indicator.setText2(MapperCheckerBundle.message("task.discovery.stringCallScan", scanned, candidates.size(), f.getName()));
+                } else {
+                    ProgressManager.checkCanceled();
+                }
+                for (PsiMethodCallExpression call : PsiTreeUtil.findChildrenOfType(f, PsiMethodCallExpression.class)) {
+                    if (StringCallInvocationExtractor.extract(call) != null) {
+                        calls.add(call);
+                    }
                 }
             }
         }
@@ -149,28 +179,20 @@ public final class InvocationDiscovery {
         }
     }
 
-    private static String describe(PsiMethod m) {
-        PsiClass owner = m.getContainingClass();
-        return (owner == null || owner.getName() == null ? "" : owner.getName() + ".") + m.getName();
-    }
-
     /**
      * 纯 Java 规则（DAL-004 / 020 / 030）的候选文件：提到任一 Query 类简单名、或提到 copyProperties 的 Java 文件。
      * 用词索引定位，不遍历全部 Java 文件。
      */
     public @NotNull List<PsiFile> findJavaFilesForRules(@NotNull GlobalSearchScope scope,
-                                                        @NotNull com.mapperchecker.core.contract.RuleOptions rules,
+                                                        @NotNull com.mapperchecker.idea.java.QueryClassIndex queryClasses,
                                                         @Nullable ProgressIndicator indicator) {
         GlobalSearchScope sourceScope = scope.intersectWith(GlobalSearchScope.projectScope(project));
-        Set<String> words = new LinkedHashSet<>();
-        for (String name : com.intellij.psi.search.PsiShortNamesCache.getInstance(project).getAllClassNames()) {
-            if (rules.isQueryClassName(name)) {
-                words.add(name);
-            }
-        }
+        // 只搜项目源码里真实存在的 Query 类名：jar 里的 CriteriaQuery / NativeQuery 之类命中后缀但毫无意义，
+        // 拿它们做全项目词搜索是纯浪费
+        Set<String> words = new LinkedHashSet<>(queryClasses.sourceQueryClasses(scope).keySet());
         words.add("copyProperties");
         Set<PsiFile> files = new LinkedHashSet<>();
-        com.intellij.psi.search.PsiSearchHelper helper = com.intellij.psi.search.PsiSearchHelper.getInstance(project);
+        PsiSearchHelper helper = PsiSearchHelper.getInstance(project);
         int done = 0;
         for (String word : words) {
             done++;

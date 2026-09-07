@@ -50,7 +50,7 @@ public final class ContractCheckEngine {
     public ContractCheckEngine(@NotNull CheckRunContext ctx) {
         this.ctx = ctx;
         this.javaRules = new com.mapperchecker.idea.java.JavaRules(ctx.project, ctx.settings,
-                (issue, anchor) -> ctx.report(issue, anchor, false), ctx.reflectiveCopyTargets);
+                (issue, anchor) -> ctx.report(issue, anchor, false), ctx.reflectiveCopyTargets, ctx.setterUsages);
         this.queryClassRules = new com.mapperchecker.idea.java.QueryClassRules(ctx.project, ctx.settings,
                 (issue, anchor) -> ctx.report(issue, anchor, false));
         this.mapperSideRules = new com.mapperchecker.idea.mapper.MapperSideRules(ctx.project, ctx.settings,
@@ -62,7 +62,7 @@ public final class ContractCheckEngine {
 
     /** Query 类级聚合规则（DAL-010 / 011），在全部 Mapper 与 Java 文件检查完之后调用。 */
     public void checkQueryClasses(@Nullable ProgressIndicator indicator) {
-        queryClassRules.check(ctx.queryUsages, ctx.reflectiveCopyTargets, indicator);
+        queryClassRules.check(ctx.queryUsages, ctx.reflectiveCopyTargets, ctx.setterUsages, indicator);
     }
 
     /** 纯 Java 规则入口，供 CheckRunner 按文件 / 全局调用。 */

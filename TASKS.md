@@ -99,6 +99,15 @@
 - [x] 设置页：Query 后缀 / 拷贝方法 / 模板 id / 实时开关
 - [ ] CI 无头扫描：不做（2026-09-07 决定）
 
+## 扫描性能优化（2026-09-07 第二轮真机反馈：一直在扫描）
+- [x] 字符串调用发现：几十次全项目引用搜索 → 词索引定位候选文件 + 单次 AST 扫描（方案 17.1）
+- [x] DAL-010：逐属性全项目引用搜索 → 扫描时登记 setter 调用查表，只有疑似死字段才回退搜索
+- [x] QueryClassIndex：只保留源码里的 Query 类，DAL-021 与候选文件共用一份，避免 jar 里 CriteriaQuery 之类的无效词搜索
+- [x] CheckRunner：逐条读操作 → 50ms 时间片批量
+- [x] BeanPropertyCollector.collect 走 CachedValuesManager 缓存
+- [x] 纯 Java 规则与 DAL-010/011 全关时跳过整个 Java 文件遍历
+- [ ] 第三轮真机验证扫描耗时
+
 ## 测试总数
 - checker-core：84
 - checker-idea：106（含 Heavy 4、端到端 39）
@@ -107,4 +116,5 @@
 - 报告窗口、设置页、右键菜单等 Swing UI 未做自动化测试，需 `gradlew :checker-idea:runIde` 人工核对。
 - Inspect Code 入口只注册在批量模式；跨文件位置（另一方法里的 put）只在报告窗口展示。实时提示只覆盖四条纯 Java 规则，默认关。
 - 豁免文件只支持"列表 + 平铺键值"形态的 YAML，锚点、多行字符串不支持。
+- 为了扫描速度（方案 17.1）：只用 insert / update / delete 且不提 receiver 类型名、也没有任何 selectXxx / queryForXxx 的 DAO 文件不会被发现；关掉 DAL-011 时，set 发生在扫描范围外的属性不再报 DAL-010。
 - 短 id（`selectList("query")`）依赖 getAllKeys 快照，key 很多的超大项目首次查询稍慢。
