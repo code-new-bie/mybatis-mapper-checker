@@ -85,7 +85,9 @@ public final class CheckRunContext {
             statistics.incSuppressedIssues();
             return;
         }
-        ReportedIssue reported = new ReportedIssue(issue, pointer(javaAnchor), mapperPointer(issue.secondaryLocation()));
+        // 必须在这里（已在 read action 内）算好模块名，不能留到渲染阶段现查 PSI。
+        String moduleName = com.mapperchecker.idea.util.Locations.moduleNameOf(javaAnchor);
+        ReportedIssue reported = new ReportedIssue(issue, pointer(javaAnchor), mapperPointer(issue.secondaryLocation()), moduleName);
         if (crossMethod) {
             crossMethodIssues.add(reported);
         } else {

@@ -8,9 +8,22 @@ plugins {
     id("org.jetbrains.intellij.platform") version "2.18.1"
 }
 
-val platformType = providers.gradleProperty("platformType")
-val platformVersion = providers.gradleProperty("platformVersion")
+val platformVersion = providers.gradleProperty("platformVersion").orElse("2024.2.6")
 val pluginSinceBuild = providers.gradleProperty("pluginSinceBuild")
+
+/**
+ * 2025.3（build 253）起 JetBrains 把 IntelliJ IDEA Community 与 Ultimate 合并成统一发行版，
+ * 下载坐标从 idea:ideaIC 变成 idea:idea，必须用 IntelliJPlatformType.IntellijIdea 而不是
+ * IntellijIdeaCommunity，否则解析不到下载地址（"Couldn't resolve ... download URL"）。
+ * 这里按版本号自动选型，命令行用 -PplatformVersion=2025.3.6 之类覆盖时无需再改这个文件。
+ */
+fun platformTypeFor(version: String): IntelliJPlatformType {
+    val (year, minor) = version.split(".").let {
+        (it.getOrNull(0)?.toIntOrNull() ?: 0) to (it.getOrNull(1)?.toIntOrNull() ?: 0)
+    }
+    val isUnified = year > 2025 || (year == 2025 && minor >= 3)
+    return if (isUnified) IntelliJPlatformType.IntellijIdea else IntelliJPlatformType.IntellijIdeaCommunity
+}
 
 repositories {
     mavenCentral()
@@ -23,7 +36,7 @@ dependencies {
     implementation(project(":checker-core"))
 
     intellijPlatform {
-        create(platformType, platformVersion)
+        create(platformVersion.map { platformTypeFor(it) }, platformVersion)
         // Java PSI 来自 Java 插件；XML PSI 属于平台核心。
         bundledPlugin("com.intellij.java")
 
@@ -60,6 +73,12 @@ intellijPlatform {
             create(IntelliJPlatformType.IntellijIdeaCommunity, "2024.1.7")
             create(IntelliJPlatformType.IntellijIdeaCommunity, "2024.2.6")
             create(IntelliJPlatformType.IntellijIdeaCommunity, "2024.3.6")
+            create(IntelliJPlatformType.IntellijIdeaCommunity, "2025.2.6")
+            // 2025.3（build 253）起 JetBrains 不再单独发布 Community 版，Community/Ultimate 合并为统一发行版，
+            // 要用 IntelliJPlatformType.IntellijIdea（无 Community/Ultimate 后缀）而不是 IntellijIdeaCommunity。
+            create(IntelliJPlatformType.IntellijIdea, "2025.3.6")
+            create(IntelliJPlatformType.IntellijIdea, "2026.1.5")
+            create(IntelliJPlatformType.IntellijIdea, "2026.2.2")
         }
     }
 

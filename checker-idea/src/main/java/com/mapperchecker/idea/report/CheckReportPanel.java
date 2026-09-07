@@ -206,8 +206,8 @@ public final class CheckReportPanel extends JPanel {
     }
 
     private String moduleOf(ReportedIssue ri) {
-        PsiElement e = ri.javaElement();
-        return com.mapperchecker.idea.util.Locations.moduleNameOf(e);
+        // 模块名在检查运行期间（read action 内）就算好存进了 ReportedIssue，这里不碰 PSI。
+        return ri.moduleName();
     }
 
     // ---------------------------------------------------------------- 选中与详情
@@ -455,6 +455,12 @@ public final class CheckReportPanel extends JPanel {
             Messages.showInfoMessage(project, MapperCheckerBundle.message("export.nothing"), MapperCheckerBundle.message("export.title"));
             return;
         }
+        // 2025.2（build 252）起 (title, description, String...) 构造方法被标为弃用，官方替代是继承自
+        // FileChooserDescriptor 的 withExtensionFilter(String, String...)，但那个方法是后来才加的 API，
+        // 在插件最低支持的 2024.2.6 编译平台上还不存在，换了会导致编译失败（已实测）。
+        // 弃用构造方法本身在方案支持的全部版本（2023.3–2026.2，Plugin Verifier 已逐一验证）里都能正常用，
+        // 保留旧写法，只压掉这一处告警。
+        @SuppressWarnings("deprecation")
         FileSaverDescriptor descriptor = new FileSaverDescriptor(
                 MapperCheckerBundle.message("export.title"), MapperCheckerBundle.message("export.description"), "md", "csv");
         VirtualFile base = com.intellij.openapi.project.ProjectUtil.guessProjectDir(project);

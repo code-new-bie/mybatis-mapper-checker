@@ -13,10 +13,17 @@ import org.jetbrains.annotations.Nullable;
  * @param issue        问题
  * @param javaAnchor   Java 侧位置（@Param 参数 / put 的 key / 方法名 / statementId 字面量）
  * @param mapperAnchor Mapper 侧位置（XML statement 标签 / 注解），可为 null
+ * @param moduleName   问题所属模块名，在检查运行期间（已在 read action 内）算好存下来；
+ *                     不要在报告渲染时现查——那时不一定持有 read action，2025.x 起的线程模型会直接抛异常
  */
 public record ReportedIssue(@NotNull ContractIssue issue,
                             @Nullable SmartPsiElementPointer<PsiElement> javaAnchor,
-                            @Nullable SmartPsiElementPointer<PsiElement> mapperAnchor) {
+                            @Nullable SmartPsiElementPointer<PsiElement> mapperAnchor,
+                            @NotNull String moduleName) {
+
+    public ReportedIssue {
+        moduleName = moduleName == null ? "" : moduleName;
+    }
 
     public @Nullable PsiElement javaElement() {
         return javaAnchor == null ? null : javaAnchor.getElement();

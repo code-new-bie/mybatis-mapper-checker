@@ -156,6 +156,10 @@ public class ModuleVisibilityHeavyTest extends JavaModuleTestCase {
         assertEquals(1, unused.size());
         assertEquals("poiId", unused.get(0).parameterName());
         assertTrue(unused.get(0).secondaryLocation().filePath().contains("module-order"));
+        // moduleName 必须在收集阶段（read action 内）就算好存进 ReportedIssue，
+        // 报告面板渲染时不再碰 PSI —— 这里直接断言存下来的值，不经过 Locations.moduleNameOf 二次计算。
+        assertEquals(1, o.reported().size());
+        assertEquals("module-order", o.reported().get(0).moduleName());
     }
 
     public void testApp模块通过传递依赖看到order的Mapper_看不到sibling() {
