@@ -21,6 +21,7 @@ import java.util.Set;
  * @param severityOverrides        规则级别覆盖
  * @param ignoreBuiltinPagination  是否忽略内置分页 / 排序参数名单（默认开）
  * @param checkBeanProperties      是否展开实体参数逐属性检查（默认开，低置信度）
+ * @param rules                    团队规范规则的可配置项
  */
 public record CheckSettings(
         List<String> ignoredParameterPatterns,
@@ -32,16 +33,26 @@ public record CheckSettings(
         Set<RuleId> disabledRules,
         Map<RuleId, Severity> severityOverrides,
         boolean ignoreBuiltinPagination,
-        boolean checkBeanProperties) {
+        boolean checkBeanProperties,
+        RuleOptions rules) {
 
     public static final int DEFAULT_TRACE_DEPTH = 3;
+
+    /** 兼容构造：无规则选项。 */
+    public CheckSettings(List<String> ignoredParameterPatterns, Set<String> ignoredStatements, Set<String> suppressedPairs,
+                         List<String> ignoredPathPatterns, int traceDepth, boolean strictVisibility,
+                         Set<RuleId> disabledRules, Map<RuleId, Severity> severityOverrides,
+                         boolean ignoreBuiltinPagination, boolean checkBeanProperties) {
+        this(ignoredParameterPatterns, ignoredStatements, suppressedPairs, ignoredPathPatterns, traceDepth,
+                strictVisibility, disabledRules, severityOverrides, ignoreBuiltinPagination, checkBeanProperties, null);
+    }
 
     /** 兼容旧构造：分页忽略与实体属性检查均为默认开。 */
     public CheckSettings(List<String> ignoredParameterPatterns, Set<String> ignoredStatements, Set<String> suppressedPairs,
                          List<String> ignoredPathPatterns, int traceDepth, boolean strictVisibility,
                          Set<RuleId> disabledRules, Map<RuleId, Severity> severityOverrides) {
         this(ignoredParameterPatterns, ignoredStatements, suppressedPairs, ignoredPathPatterns, traceDepth,
-                strictVisibility, disabledRules, severityOverrides, true, true);
+                strictVisibility, disabledRules, severityOverrides, true, true, null);
     }
 
     public CheckSettings {
@@ -52,11 +63,12 @@ public record CheckSettings(
         traceDepth = traceDepth <= 0 ? DEFAULT_TRACE_DEPTH : traceDepth;
         disabledRules = disabledRules == null ? Set.of() : Set.copyOf(disabledRules);
         severityOverrides = severityOverrides == null ? Map.of() : Map.copyOf(severityOverrides);
+        rules = rules == null ? RuleOptions.defaults() : rules;
     }
 
     public static CheckSettings defaults() {
         return new CheckSettings(List.of(), Set.of(), Set.of(), List.of(), DEFAULT_TRACE_DEPTH, true,
-                Set.of(), new EnumMap<>(RuleId.class), true, true);
+                Set.of(), new EnumMap<>(RuleId.class), true, true, RuleOptions.defaults());
     }
 
     /** 该参数名 / 路径是否命中忽略配置（用户列表 + 内置分页名单）。 */

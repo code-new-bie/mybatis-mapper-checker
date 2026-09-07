@@ -149,10 +149,10 @@ public class ModuleVisibilityHeavyTest extends JavaModuleTestCase {
 
     public void test接口在order模块_XML同模块_include跨依赖模块_不见sibling() {
         CheckRunner.Outcome o = run(CheckScope.module(order), true);
-        // sibling 的同 fullId statement 不可见，因此不是 MMC003
-        assertTrue(ofRule(o, RuleId.MMC003).isEmpty());
+        // sibling 的同 fullId statement 不可见，因此不是 DAL-006
+        assertTrue(ofRule(o, RuleId.DAL_006).isEmpty());
         // include 到 common 的片段成功展开：merchantId 被使用，poiId 未使用
-        List<ContractIssue> unused = ofRule(o, RuleId.MMC001);
+        List<ContractIssue> unused = ofRule(o, RuleId.DAL_001);
         assertEquals(1, unused.size());
         assertEquals("poiId", unused.get(0).parameterName());
         assertTrue(unused.get(0).secondaryLocation().filePath().contains("module-order"));
@@ -165,21 +165,21 @@ public class ModuleVisibilityHeavyTest extends JavaModuleTestCase {
     public void testApp模块通过传递依赖看到order的Mapper_看不到sibling() {
         CheckRunner.Outcome o = run(CheckScope.module(app), true);
         // q 可见（app → order），poiId 多余
-        List<ContractIssue> unused = ofRule(o, RuleId.MMC001);
+        List<ContractIssue> unused = ofRule(o, RuleId.DAL_001);
         assertEquals(dump(o), 1, unused.size());
         assertEquals(NS + ".q", unused.get(0).statementId());
-        // onlyInSibling 在严格模式下不可见 → MMC002
-        List<ContractIssue> nf = ofRule(o, RuleId.MMC002);
+        // onlyInSibling 在严格模式下不可见 → DAL-005
+        List<ContractIssue> nf = ofRule(o, RuleId.DAL_005);
         assertEquals(1, nf.size());
         assertEquals(NS + ".onlyInSibling", nf.get(0).statementId());
     }
 
     public void test兼容模式fallback到整项目_但同fullId仍报歧义() {
         CheckRunner.Outcome o = run(CheckScope.module(app), false);
-        // onlyInSibling 在兼容模式下可以找到，不再 MMC002
-        assertTrue(ofRule(o, RuleId.MMC002).isEmpty());
+        // onlyInSibling 在兼容模式下可以找到，不再 DAL-005
+        assertTrue(ofRule(o, RuleId.DAL_005).isEmpty());
         // q：严格层已唯一命中 order，不会因为兼容层多一个候选而报歧义
-        assertTrue(ofRule(o, RuleId.MMC003).isEmpty());
+        assertTrue(ofRule(o, RuleId.DAL_006).isEmpty());
     }
 
     public void test整项目扫描_sibling接口自身检查() {

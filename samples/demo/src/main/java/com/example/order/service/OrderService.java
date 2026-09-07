@@ -12,7 +12,7 @@ public class OrderService {
     private OrderMapper orderMapper;
     private SqlSession sqlSession;
 
-    /** 调用点 put 了 poiId，XML 没用 → MMC001，位置在 put 行。 */
+    /** 调用点 put 了 poiId，XML 没用 → DAL-001，位置在 put 行。 */
     public List<Object> byMap(Long merchantId, Long poiId) {
         Map<String, Object> params = new HashMap<>();
         params.put("merchantId", merchantId);
@@ -20,7 +20,7 @@ public class OrderService {
         return orderMapper.queryByMap(params);
     }
 
-    /** 跨方法构造：buildParams 里的 poiId 未用 → MMC001（中置信度，附路径）。 */
+    /** 跨方法构造：buildParams 里的 poiId 未用 → DAL-001（中置信度，附路径）。 */
     public List<Object> byBuilder(Long merchantId, Long poiId) {
         return sqlSession.selectList("com.example.order.dao.OrderMapper.queryByMap", buildParams(merchantId, poiId));
     }

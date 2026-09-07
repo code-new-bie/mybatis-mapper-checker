@@ -1,0 +1,8 @@
+# MyBatis Mapper Checker 团队豁免记录：每条必须带 reason / by / at，随代码进版本库
+- rule: DAL-001
+  target: com.example.order.dao.OrderMapper.queryByAnnotation#shopId
+  reason: 演示豁免：shopId 由数据权限拦截器追加到 SQL
+  by: demo
+  at: 2026-09-07
+- target: com.example.order.dao.OrderMapper.queryOrder#poiId
+  reason: 演示无效豁免：缺 by 与 at，报告会提示未生效

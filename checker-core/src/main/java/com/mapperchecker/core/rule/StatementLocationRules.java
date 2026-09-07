@@ -13,7 +13,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * MMC002（statement 不存在）与 MMC003（多候选）。方案 6.2 / 6.3。
+ * DAL-005（statement 不存在）与 DAL-006（多候选）。方案 6.2 / 6.3。
  */
 public final class StatementLocationRules {
 
@@ -43,7 +43,7 @@ public final class StatementLocationRules {
     }
 
     /**
-     * @return MMC002 或 MMC003 的问题；唯一命中时为空列表
+     * @return DAL-005 或 DAL-006 的问题；唯一命中时为空列表
      */
     public List<ContractIssue> check(DaoInvocation invocation, Lookup lookup) {
         List<ContractIssue> issues = new ArrayList<>();
@@ -54,12 +54,12 @@ public final class StatementLocationRules {
             return issues;
         }
         if (lookup.candidates().isEmpty()) {
-            if (settings.isEnabled(RuleId.MMC002)) {
+            if (settings.isEnabled(RuleId.DAL_005)) {
                 issues.add(new ContractIssue(
-                        RuleId.MMC002,
-                        settings.severityOf(RuleId.MMC002),
+                        RuleId.DAL_005,
+                        settings.severityOf(RuleId.DAL_005),
                         lookup.maybeInLibrary() ? Confidence.MEDIUM : Confidence.HIGH,
-                        Messages.get("issue.MMC002", invocation.shortStatementId()),
+                        Messages.get("issue.DAL-005", invocation.shortStatementId()),
                         lookup.maybeInLibrary() ? Messages.get("remark.maybe.in.library") : "",
                         "",
                         invocation.statementId(),
@@ -70,16 +70,16 @@ public final class StatementLocationRules {
             }
             return issues;
         }
-        if (lookup.candidates().size() > 1 && settings.isEnabled(RuleId.MMC003)) {
+        if (lookup.candidates().size() > 1 && settings.isEnabled(RuleId.DAL_006)) {
             List<SourceLocation> locations = new ArrayList<>();
             for (ResolvedStatement c : lookup.candidates()) {
                 locations.addAll(c.definitions());
             }
             issues.add(new ContractIssue(
-                    RuleId.MMC003,
-                    settings.severityOf(RuleId.MMC003),
+                    RuleId.DAL_006,
+                    settings.severityOf(RuleId.DAL_006),
                     Confidence.HIGH,
-                    Messages.get("issue.MMC003", invocation.shortStatementId()),
+                    Messages.get("issue.DAL-006", invocation.shortStatementId()),
                     lookup.dbVariantSuspected() ? Messages.get("remark.db.variant") : "",
                     "",
                     invocation.statementId(),

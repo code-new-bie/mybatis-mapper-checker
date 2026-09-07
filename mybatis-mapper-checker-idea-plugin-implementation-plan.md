@@ -97,6 +97,7 @@ iBatis 2  <sqlMap namespace="Order">                              XML statement�
 | 跨类继承、接口多实现的参数追踪 | 标无法解析 |
 | Kotlin、Spring XML、数据库 Schema 校验、SQL 执行计划 | 不在范围 |
 | GitLab CI、SonarQube、独立 CLI | 第一阶段只做 IDEA 插件 |
+| CI 无头扫描模式（`runIde -PscanProject -PscanOut`） | 2026-09-07 定：流水线里要起完整 IDEA 平台，代价与收益不匹配，永久不做；插件只在 IDE 内交互使用 |
 
 ---
 
@@ -109,7 +110,7 @@ iBatis 2  <sqlMap namespace="Order">                              XML statement�
 | Gradle 根工程 | `mybatis-mapper-checker` |
 | Gradle 子模块 | `checker-core`、`checker-idea` |
 | Java 根包 | `com.mapperchecker` |
-| 规则前缀 | `MMC`（MyBatis Mapper Checker） |
+| 规则前缀 | `DAL`，沿用团队规范《开发规范：Query 与 Mapper 绑定》的编号；插件早期的 MMC001/002/003 对应 DAL-001/005/006 |
 | 设置页路径 | Settings → Tools → MyBatis Mapper Checker |
 | 工具窗口名 | MyBatis Mapper Checker |
 | 设置持久化文件 | `.idea/mybatis-mapper-checker.xml` |
@@ -148,7 +149,7 @@ mybatis-mapper-checker/
 │   ├── model/             DaoInvocation、MapperStatement、ParameterReference、ContractIssue ...
 │   ├── naming/            参数名归一化、别名组、OGNL 标识符提取
 │   ├── contract/          差集计算、置信度判定
-│   └── rule/              MMC001 / MMC002 / MMC003
+│   └── rule/              DAL-001 / DAL-005 / DAL-006
 │
 └── checker-idea/          所有 IDEA 相关代码
     ├── action/            三个触发 Action
@@ -278,11 +279,11 @@ public final class CheckResult {
 
 | 规则 | 含义 | 默认级别 | 置信度 |
 |---|---|---|---|
-| MMC001 | 参数已声明或传入，但 Mapper SQL 未使用 | Warning | 高 / 中 / 低，见下 |
-| MMC002 | statement 不存在 | Error | 高；可能定义在未索引依赖中时为中 |
-| MMC003 | statement 存在多个候选，无法确定目标 | Warning | 高 |
+| DAL-001 | 参数已声明或传入，但 Mapper SQL 未使用 | Warning | 高 / 中 / 低，见下 |
+| DAL-005 | statement 不存在 | Error | 高；可能定义在未索引依赖中时为中 |
+| DAL-006 | statement 存在多个候选，无法确定目标 | Warning | 高 |
 
-### 6.1 MMC001 置信度
+### 6.1 DAL-001 置信度
 
 | 来源 | 置信度 | 备注文案 |
 |---|---|---|
@@ -296,16 +297,16 @@ public final class CheckResult {
 ### 6.1A 内置分页参数忽略（真机试用后加入）
 
 PageHelper、MyBatis-Plus、手写分页都会把 pageNum / pageSize / offset / limit / orderBy 等放进参数对象，SQL 里不引用（由拦截器拼 LIMIT）。
-逐个报 MMC001 全是误报，真机试用时占了绝大多数。内置名单与通配（`page*`、`*PageSize`、`*Offset`、`*Limit`、`*OrderBy` 等）
+逐个报 DAL-001 全是误报，真机试用时占了绝大多数。内置名单与通配（`page*`、`*PageSize`、`*Offset`、`*Limit`、`*OrderBy` 等）
 默认开启忽略，设置里可关闭或补充。带路径时只看最后一段（`q.pageSize` → `pageSize`）。
 
 置信度只影响报告排序和展示，不影响是否报告。原则：**报告可疑，而不是断言错误**，由使用者判断。
 
-### 6.2 MMC002 对 Mapper 接口的含义
+### 6.2 DAL-005 对 Mapper 接口的含义
 
 接口方法既没有 XML statement 也没有 SQL 注解，运行时 MyBatis 抛 `BindingException`，是确定性错误。定位到方法名。
 
-### 6.3 MMC003 触发情形
+### 6.3 DAL-006 触发情形
 
 - 多个模块存在同 fullId 的 statement 且都可见
 - 同一 XML 或多个 XML 中 fullId 重复（databaseId 不同的除外，见 8.7）
@@ -316,22 +317,42 @@ PageHelper、MyBatis-Plus、手写分页都会把 pageNum / pageSize / offset / 
 ### 6.4 实现顺序
 
 ```text
-MMC002（接口方法 → XML / 注解定位）
+DAL-005（接口方法 → XML / 注解定位）
    ↓
-MMC001 接口声明级 @Param
+DAL-001 接口声明级 @Param
    ↓
-MMC001 方法内 Map
+DAL-001 方法内 Map
    ↓
-MMC001 Bean setter（低置信度）
+DAL-001 Bean setter（低置信度）
    ↓
-MMC001 跨方法
+DAL-001 跨方法
    ↓
-MMC003
+DAL-006
    ↓
 SqlSession 字符串调用 + iBatis 2 兼容
+   ↓
+团队规范规则（6.5，2026-09-07 加入）
 ```
 
 先把定位做准，再做参数差异。
+
+### 6.5 团队规范规则（《开发规范：Query 与 Mapper 绑定》）
+
+规范共 11 条，插件全部覆盖；编号沿用规范，插件原 MMC001/002/003 对应 DAL-001/005/006。除下表标"全局"者外都随范围检查；标"纯 Java"者不依赖 Mapper，可开实时提示（见 15.4）。
+
+| 规则 | 含义 | 默认级别 | 说明 |
+|---|---|---|---|
+| DAL-002 | Mapper 引用了实体类里不存在的属性 | Error | 只对实体类型参数（单 Bean / `@Param` Bean）检查，Map 参数不查；嵌套路径逐段校验；备注相似属性名（`NameSimilarity`） |
+| DAL-003 | 模板语句里 `<if test="a">` 块内绑定的却是 `#{b}` | Error | 只对模板 statement（默认 listByQuery / listPageByQuery / getByQuery / countByQuery / save / update / updateByQuery，设置可改）；foreach item / index、bind 局部名不算 |
+| DAL-004 | copyProperties 参数顺序写反，空对象被当作源 | Error（纯 Java） | 按内置 + 设置的"拷贝方法源参数位置"表判断（Spring 0、hjly BeanUtils 1、commons-beanutils 1、hutool 0）；源是 `new X()` 或初始化后从未 set / 重赋值的局部变量才报 |
+| DAL-010 | 调用方 set 了字段，但 Query 类关联的所有语句都不引用它 | Warning（全局） | 关联语句 = 该实体作为参数出现过的 statement 集合；setter 有引用 → DAL-010，无引用 → DAL-011；无 setter 的属性、分页参数跳过；被反射拷贝当过目标的实体加备注 |
+| DAL-011 | 既无人 set 也无语句引用的死字段 | WeakWarning（全局） | 同上 |
+| DAL-020 | transform / convert / to / build 方法内使用反射拷贝 | Warning（纯 Java） | 转换方法 = 返回 Query 类，或方法名前缀命中且返回项目里的 Bean |
+| DAL-021 | 跨模块同名 Query 类 | Warning（全局） | 以 Query 类后缀（默认 `Query`）按简单名查 `PsiShortNamesCache` |
+| DAL-022 | DAO 方法的 Query 参数未注解为 `@Param("query")` | WeakWarning（纯 Java） | 只看 Mapper 接口方法里类型名命中 Query 后缀的参数 |
+| DAL-030 | 跨层转换 `setA(x.getB())` 改了字段名 | Warning（纯 Java） | `NameSimilarity.classify`：拼写高度相似 → typo 文案；单复数 / 集合变体 → plural 文案；完全不同名不报 |
+
+规范里"CI 无头扫描"一节不做（1.6）；"豁免文件"与"实时提示"见 15.4。DAL-010/011/021 只在 Module / 整项目范围跑，单文件范围不跑（进度条会多出两步"Query 类"与"同名类"）。
 
 ---
 
@@ -394,7 +415,7 @@ List<Order> queryOrder(@Param("merchantId") Long merchantId, @Param("status") St
 ```text
 @Select / @Insert / @Update / @Delete
   → value 为字符串或字符串数组，用 PsiConstantEvaluationHelper 逐段求值后拼接
-  → 求不出的片段跳过，statement 标 partiallyParsed，该 statement 不报 MMC001
+  → 求不出的片段跳过，statement 标 partiallyParsed，该 statement 不报 DAL-001
   → 含 <script> 时按 XML 规则解析动态标签
   → #{} / ${} 提取规则同 XML
 
@@ -490,9 +511,9 @@ iBatis 2（兼容）：
 
 | 情形 | 决策 |
 |---|---|
-| 同 id 不同 `databaseId` | 视为一条 statement，参数取并集，不报 MMC003 |
-| 同 namespace 分散在多个 XML | MyBatis 允许，按 fullId 合并，只有 fullId 重复才报 MMC003 |
-| 接口方法既有 XML 又有注解 SQL | MMC003 |
+| 同 id 不同 `databaseId` | 视为一条 statement，参数取并集，不报 DAL-006 |
+| 同 namespace 分散在多个 XML | MyBatis 允许，按 fullId 合并，只有 fullId 重复才报 DAL-006 |
+| 接口方法既有 XML 又有注解 SQL | DAL-006 |
 
 ---
 
@@ -602,7 +623,7 @@ selectList(QUERY, p);
 
 用 `PsiConstantEvaluationHelper` 求值。求不出（`selectList(getName(), p)`）标 UNRESOLVED，原因 STATEMENT_ID_DYNAMIC，不报。
 
-MyBatis 允许短 id `selectList("query")`：全项目唯一时可解析，多候选报 MMC003。
+MyBatis 允许短 id `selectList("query")`：全项目唯一时可解析，多候选报 DAL-006。
 
 ---
 
@@ -653,7 +674,7 @@ orderMapper.query(query);
 
 Bean 判定：类型不是 `Map` 子类型、不是 JDK 基础类型、且当前方法内有 setter 调用。
 
-Bean 来源的 MMC001 一律低置信度，理由见 6.1。
+Bean 来源的 DAL-001 一律低置信度，理由见 6.1。
 
 ### 10.3 跨方法追踪
 
@@ -704,7 +725,7 @@ orderMapper.query(params);          // 参数 = {merchantId, status}
 Map 被 putAll(不可追踪) / remove / clear   MAP_MUTATED
 ```
 
-多分支取并集的理由：只要有一条路径会 put 某 key 而 Mapper 从不使用，该 put 就是无效代码，报 MMC001 是准确的。
+多分支取并集的理由：只要有一条路径会 put 某 key 而 Mapper 从不使用，该 put 就是无效代码，报 DAL-001 是准确的。
 
 问题定位：在实际执行 put 的那一行，即使它在另一个方法里。报告附调用路径：
 
@@ -732,15 +753,15 @@ Map 被 putAll(不可追踪) / remove / clear   MAP_MUTATED
 ## 11. 匹配与比较
 
 ```text
-MMC001 候选 = Java 侧 rootName（含别名组）集合 − Mapper 侧 rootName 集合
+DAL-001 候选 = Java 侧 rootName（含别名组）集合 − Mapper 侧 rootName 集合
 ```
 
 - 别名组内任一名字被 Mapper 引用，即视为已使用。
 - 精确匹配，大小写敏感。
-- Java 侧名字找不到、但 Mapper 侧存在仅大小写不同的名字：仍报 MMC001，备注"Mapper 中存在 'poiid'，疑似大小写不一致"。
+- Java 侧名字找不到、但 Mapper 侧存在仅大小写不同的名字：仍报 DAL-001，备注"Mapper 中存在 'poiid'，疑似大小写不一致"。
 - 命中忽略配置（第 15 节）的不进入候选。
-- statement 为 partiallyParsed 时不报 MMC001，只做 MMC002 / MMC003。
-- 单标量参数不报 MMC001。
+- statement 为 partiallyParsed 时不报 DAL-001，只做 DAL-005 / DAL-006。
+- 单标量参数不报 DAL-001。
 
 ---
 
@@ -758,26 +779,26 @@ MMC001 候选 = Java 侧 rootName（含别名组）集合 − Mapper 侧 rootNam
 
 "当前 Module"对接口方法指接口所在模块，对调用点指调用代码所在模块。
 
-默认不全项目匹配。同级候选出现多个 → MMC003。
+默认不全项目匹配。同级候选出现多个 → DAL-006。
 
 ### 12.3 严格 / 兼容模式
 
 ```text
 ● 严格模块依赖     只查当前 + 依赖 Module
-○ 整项目兼容模式   找不到时允许全 Project fallback；多候选仍报 MMC003，不猜
+○ 整项目兼容模式   找不到时允许全 Project fallback；多候选仍报 DAL-006，不猜
 ```
 
 ### 12.4 test root
 
-test 资源目录下的 XML 只对 test 源码可见。main 代码解析 statement 时排除 test root，避免测试 Mapper 造成 MMC003。
+test 资源目录下的 XML 只对 test 源码可见。main 代码解析 statement 时排除 test root，避免测试 Mapper 造成 DAL-006。
 
 ### 12.5 多数据库变体目录
 
-`mapper/mysql/OrderMapper.xml` 与 `mapper/oracle/OrderMapper.xml` 各一份：报 MMC003，备注"可能为多数据库变体"。提供设置项"忽略路径模式"整体排除某目录。
+`mapper/mysql/OrderMapper.xml` 与 `mapper/oracle/OrderMapper.xml` 各一份：报 DAL-006，备注"可能为多数据库变体"。提供设置项"忽略路径模式"整体排除某目录。
 
 ### 12.6 依赖 jar 中的 statement
 
-library roots 已索引。仍找不到时，MMC002 降为中置信度，备注"可能定义在未索引的依赖中"。
+library roots 已索引。仍找不到时，DAL-005 降为中置信度，备注"可能定义在未索引的依赖中"。
 
 ---
 
@@ -874,7 +895,7 @@ CheckRunContext
 
 | 列 | 内容 |
 |---|---|
-| 规则 | MMC001 / MMC002 / MMC003 |
+| 规则 | DAL-001 / DAL-005 / DAL-006 |
 | 参数 | poiId |
 | statement | com.example.order.dao.OrderMapper.queryOrder |
 | 位置 | OrderMapper.java:18 |
@@ -900,7 +921,7 @@ CheckRunContext
 ```text
 参数 'poiId' 已声明在 'OrderMapper.queryOrder'，但对应 Mapper SQL 未使用该参数。
 
-规则：MMC001
+规则：DAL-001
 Mapper：order-dao/src/main/resources/mapper/OrderMapper.xml
 statement：com.example.order.dao.OrderMapper.queryOrder
 置信度：高
@@ -912,9 +933,9 @@ statement：com.example.order.dao.OrderMapper.queryOrder
 
 Bean 追加：`备注：参数来自 Bean setter，该属性可能另有用途，请人工确认。`，置信度：低。
 
-MMC002：`'OrderMapper.queryOrder' 未找到对应的 Mapper statement 或 SQL 注解。`
+DAL-005：`'OrderMapper.queryOrder' 未找到对应的 Mapper statement 或 SQL 注解。`
 
-MMC003：`'OrderMapper.queryOrder' 匹配到多个 Mapper statement，无法确定实际调用目标。` 并列出各候选文件。
+DAL-006：`'OrderMapper.queryOrder' 匹配到多个 Mapper statement，无法确定实际调用目标。` 并列出各候选文件。
 
 ### 14.3 无法解析分组
 
@@ -937,7 +958,7 @@ MMC003：`'OrderMapper.queryOrder' 匹配到多个 Mapper statement，无法确�
 ```text
 1. 组合抑制    设置中记录 "com.example.order.dao.OrderMapper.queryOrder#poiId"，只抑制这一个组合
               报告右键"忽略此处"直接写入
-2. 注解抑制    @SuppressWarnings("MMC001")，可放在接口方法、参数、DAO 方法上
+2. 注解抑制    @SuppressWarnings("DAL-001")，可放在接口方法、参数、DAO 方法上
 3. 行注释      // mapper-checker: ignore   放在 put 行或参数所在行
 ```
 
@@ -960,11 +981,34 @@ MMC003：`'OrderMapper.queryOrder' 匹配到多个 Mapper statement，无法确�
 规则级别
 gutter icon 开关（默认关）
 报告默认范围（默认整个项目）
+Query 类后缀（默认 Query）
+拷贝方法源参数位置（fqn#method=index，每行一条，与内置表合并）
+模板 statement id 列表（DAL-003 适用范围）
+在编辑器里实时提示纯 Java 规则（默认关，见 15.4）
 ```
 
 ### 15.3 国际化
 
 文案全部走 `MapperCheckerBundle`，默认 zh_CN。后续加英文只补一个 properties。
+
+### 15.4 团队豁免文件与实时提示（2026-09-07 加入）
+
+**豁免 ≠ 抑制。** 15.1 的三种抑制是个人 / 项目级"别再烦我"，不留痕；豁免是团队级"我们确认过了"，进版本库、有人名日期、报告里仍然可见。
+
+```text
+文件   .binding-scan-ignore.yml，放项目根或任一 Module 内容根，全部生效
+格式   - rule: DAL-010                       # 可省，省略则匹配该 target 的全部规则
+         target: com.x.OrderQuery#poiId       # 与组合抑制 key 相同：owner#name / statement#param；只写 statement 匹配它的所有参数
+         reason: 由拦截器注入
+         by: 张三
+         at: 2026-09-07
+校验   reason / by / at 缺一条即无效：不生效、统计条与 Markdown 里提示"N 条豁免记录缺 reason / by / at 未生效"
+写入   报告右键"豁免此处"：弹窗填理由，by = 当前系统用户，at = 今天，追加到问题所在 Module 的 yml（没有则建在项目根）
+展示   报告树"已豁免（N）"分组，行内显示 by / at / reason，详情含记录文件与行号；Markdown 单独一节；CSV 首列"状态"区分 问题 / 已豁免
+解析   自写 ExemptionFileParser，只支持"列表 + 平铺键值"，引号内的 # 与 : 保留，不引入 YAML 库
+```
+
+实时提示：`JavaRulesLocalInspection`（`localInspection`，shortName `MyBatisMapperJavaRules`）只跑四条纯 Java 规则 DAL-004 / 020 / 022 / 030，按元素访问（`visitMethodCallExpression` / `visitMethod`），不做引用搜索。设置项默认关；关时 `buildVisitor` 返回空访问器，编辑器零干扰，与 1.4 的"手动触发"原则不冲突。抑制与豁免同样生效。
 
 ---
 
@@ -1033,9 +1077,9 @@ com.mapperchecker
 │   │   ├── ParameterContractEngine       差集 + 别名组匹配 + 大小写提示
 │   │   └── ConfidenceResolver
 │   └── rule
-│       ├── UnusedParameterRule           MMC001
-│       ├── StatementNotFoundRule         MMC002
-│       └── AmbiguousStatementRule        MMC003
+│       ├── UnusedParameterRule           DAL-001
+│       ├── StatementNotFoundRule         DAL-005
+│       └── AmbiguousStatementRule        DAL-006
 │
 └── idea                                  （checker-idea）
     ├── action
@@ -1109,30 +1153,30 @@ parent
 
 | 场景 | 预期 |
 |---|---|
-| `@Param("poiId")` 声明，XML 未用 | MMC001，高，位置在 PsiParameter |
+| `@Param("poiId")` 声明，XML 未用 | DAL-001，高，位置在 PsiParameter |
 | `@Param` 全部使用 | 无 |
-| 无 `@Param` 双参数，XML 用 `#{param2}` 未用第一个 | MMC001（第一个），中 |
+| 无 `@Param` 双参数，XML 用 `#{param2}` 未用第一个 | DAL-001（第一个），中 |
 | 无 `@Param` 双参数，XML 用 `#{arg0}` `#{arg1}` | 无 |
-| 单 Bean 无 `@Param`，XML 只用 `#{merchantId}` | 其余属性 MMC001，低，位置在实体字段 |
+| 单 Bean 无 `@Param`，XML 只用 `#{merchantId}` | 其余属性 DAL-001，低，位置在实体字段 |
 | 单 Bean 含 pageNum / pageSize / orderBy 属性 | 内置分页名单忽略，不报 |
 | 单 Bean 属性 `address`，XML `#{address.city}` | 匹配，无问题 |
-| `@Param("q") Bean`，XML `#{q.merchantId}` | `q.poiId` 等未用属性 MMC001，低 |
+| `@Param("q") Bean`，XML `#{q.merchantId}` | `q.poiId` 等未用属性 DAL-001，低 |
 | `@Param("q") Bean` 整体未用 | 只报 `q`（高），不逐个报属性 |
 | 单 `Object` / `Date` 参数 | 库类型不展开，不检查 |
-| 单 Map 无 `@Param`，调用点 put 多余 key | MMC001，位置在 put 行 |
+| 单 Map 无 `@Param`，调用点 put 多余 key | DAL-001，位置在 put 行 |
 | 单 `List<Long>`，XML `<foreach collection="list">` | 无 |
-| 单 `List<Long>`，XML 未用任何别名 | MMC001，中 |
+| 单 `List<Long>`，XML 未用任何别名 | DAL-001，中 |
 | 含 `RowBounds` | 排除 |
-| 方法无 XML 无注解 | MMC002，位置在方法名 |
-| 方法既有 XML 又有 `@Select` | MMC003 |
-| `@Select` 未用 `@Param` 参数 | MMC001 |
+| 方法无 XML 无注解 | DAL-005，位置在方法名 |
+| 方法既有 XML 又有 `@Select` | DAL-006 |
+| `@Select` 未用 `@Param` 参数 | DAL-001 |
 | `@Select` 含 `<script><if test>` | 正确提取 |
 | `@Select` 值为常量拼接 | 求值后正确提取 |
-| `@Select` 含不可求值片段 | partiallyParsed，不报 MMC001 |
+| `@Select` 含不可求值片段 | partiallyParsed，不报 DAL-001 |
 | `@SelectProvider` | 不报，列入无法解析 |
 | `default` / `static` 方法 | 跳过 |
 | 继承自 `BaseMapper` 的方法 | 跳过 |
-| 接口重载同名方法 | MMC003 |
+| 接口重载同名方法 | DAL-006 |
 | `@MapperScan` 项目（无 `@Mapper` 注解） | 靠 namespace 索引正确判定 |
 
 **字符串调用**
@@ -1141,7 +1185,7 @@ parent
 |---|---|
 | `sqlSession.selectList("全限定.id", map)` | 与 Map 场景同规则 |
 | 短 id 全项目唯一 | 可解析 |
-| 短 id 多候选 | MMC003 |
+| 短 id 多候选 | DAL-006 |
 | 静态常量 / 拼接 statementId | 正确 |
 | `selectList(getName(), p)` | 无法解析，不报 |
 | iBatis `queryForList("Order.query", map)` | 与 MyBatis 同规则 |
@@ -1150,20 +1194,20 @@ parent
 
 | 场景 | 预期 |
 |---|---|
-| Map put 遗漏 | MMC001，高 |
+| Map put 遗漏 | DAL-001，高 |
 | `Map.of` / `ImmutableMap.of` / 双花括号 | 正确 |
 | put key 为常量 | 正确 |
 | put key 不可求值 | 无法解析 |
 | `putAll(可追踪)` | 合并 |
 | `putAll(不可追踪)` / `remove` / `clear` | 无法解析 |
-| Bean setter 遗漏 | MMC001，低，备注 |
+| Bean setter 遗漏 | DAL-001，低，备注 |
 | `setURL` ↔ `#{URL}` | 匹配 |
 | 链式 setter | 每个都算 |
 | Lombok `@Builder` | 无法解析 |
 | 入参 Bean 无 setter | 无法解析 |
-| 同类私有方法构造后遗漏 | MMC001，中，位置在构造方法 put，附路径 |
-| 其他类静态方法构造 | MMC001 |
-| 多 return 分支某分支遗漏 | MMC001 |
+| 同类私有方法构造后遗漏 | DAL-001，中，位置在构造方法 put，附路径 |
+| 其他类静态方法构造 | DAL-001 |
+| 多 return 分支某分支遗漏 | DAL-001 |
 | 构造后当前方法再 put | 合并 |
 | 构造方法被多 statement 消费仅部分未用 | 无 |
 | 深度超限 / 互相递归 | 无法解析，不抛异常 |
@@ -1186,9 +1230,9 @@ parent
 | include 循环 | 不死循环，partiallyParsed |
 | `<include refid="${x}">` | 无法解析 |
 | iBatis `parameterMap` + `?` | 正确 |
-| 同 id 不同 databaseId | 合并，不报 MMC003 |
+| 同 id 不同 databaseId | 合并，不报 DAL-006 |
 | 同 namespace 多文件 | 合并 |
-| Java `poiId` vs Mapper `poiid` | MMC001，备注大小写 |
+| Java `poiId` vs Mapper `poiid` | DAL-001，备注大小写 |
 
 **模块与运行**
 
@@ -1196,9 +1240,9 @@ parent
 |---|---|
 | 同 Module / 依赖 Module / 传递依赖 | 正确 |
 | 不可见 sibling 同 fullId | 不误匹配 |
-| 兼容模式 fallback | 可解析；多候选仍 MMC003 |
-| test root XML 对 main 不可见 | 不报 MMC003 |
-| 多数据库变体目录 | MMC003 + 备注；忽略路径后消失 |
+| 兼容模式 fallback | 可解析；多候选仍 DAL-006 |
+| test root XML 对 main 不可见 | 不报 DAL-006 |
+| 多数据库变体目录 | DAL-006 + 备注；忽略路径后消失 |
 | jar 内 XML | 可定位 |
 | 忽略参数 / statement / 组合 / `@SuppressWarnings` / 行注释 | 不报，计入已抑制 |
 | Dumb Mode 触发 | 提示，不启动，不抛异常 |
@@ -1218,9 +1262,9 @@ parent
 | 3 Mapper 解析 | MyBatis XML、注解 SQL、iBatis XML、include、parameterMap、归一化、OGNL | 任意 statement → 参数集合 |
 | 4 Java 解析 | Mapper 接口判定、签名别名组、字符串调用、statementId 求值 | 任意 DaoInvocation |
 | 5 模块可见性 | 优先级、严格/兼容、test root、歧义 | 候选列表 |
-| 6 MMC002 / MMC003 | 定位规则 | 定位准确 |
-| 7 MMC001 声明级 | `@Param` / 别名组 / 差集 / 置信度 / 忽略 | 主路径可用 |
-| 8 MMC001 数据流 | Map / Bean / 链式 / Guava / 跨方法 / 多消费者 | 补充路径可用 |
+| 6 DAL-005 / DAL-006 | 定位规则 | 定位准确 |
+| 7 DAL-001 声明级 | `@Param` / 别名组 / 差集 / 置信度 / 忽略 | 主路径可用 |
+| 8 DAL-001 数据流 | Map / Bean / 链式 / Guava / 跨方法 / 多消费者 | 补充路径可用 |
 | 9 触发与报告 | 三个 Action、后台任务、运行级缓存、工具窗口、导出、GlobalInspectionTool | 端到端可用 |
 | 10 抑制与设置 | 三种抑制、设置页、持久化 | 可配置 |
 | 11 导航 | Ctrl+Click、gutter（默认关）、MyBatisX 让位 | |
@@ -1258,7 +1302,7 @@ Analyze → Inspect Code 得到同样结果
 正常使用的参数不误报
 Bean setter 场景明确标低置信度
 sibling Module 不误匹配；同 fullId 不擅自猜测
-databaseId 变体、test root、多文件同 namespace 不误报 MMC003
+databaseId 变体、test root、多文件同 namespace 不误报 DAL-006
 无法解析的调用在报告中可见
 ```
 

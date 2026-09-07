@@ -41,6 +41,13 @@ public final class MapperCheckerSettings implements PersistentStateComponent<Map
         public boolean showGutterIcon = false;
         public boolean ignoreBuiltinPagination = true;
         public boolean checkBeanProperties = true;
+        /** 团队规范规则选项。 */
+        public List<String> queryClassSuffixes = new ArrayList<>();
+        /** 每行 声明类#方法=源参数下标。 */
+        public List<String> copyMethods = new ArrayList<>();
+        public List<String> templateStatementIds = new ArrayList<>();
+        /** 纯 Java 规则（DAL-004 / 020 / 022 / 030）是否在编辑器里实时提示，默认关。 */
+        public boolean realtimeJavaRules = false;
         public String lastScope = "PROJECT";
         public String exportPath = "";
     }
@@ -69,16 +76,19 @@ public final class MapperCheckerSettings implements PersistentStateComponent<Map
     public CheckSettings toCheckSettings() {
         Set<RuleId> disabled = new HashSet<>();
         for (String r : state.disabledRules) {
-            try {
-                disabled.add(RuleId.valueOf(r));
-            } catch (IllegalArgumentException ignored) {
-                // 旧配置里的未知规则忽略
+            RuleId id = RuleId.fromCode(r);
+            if (id != null) {
+                disabled.add(id);
             }
         }
         Map<RuleId, Severity> severities = new EnumMap<>(RuleId.class);
         for (Map.Entry<String, String> e : state.severityOverrides.entrySet()) {
+            RuleId id = RuleId.fromCode(e.getKey());
+            if (id == null) {
+                continue;
+            }
             try {
-                severities.put(RuleId.valueOf(e.getKey()), Severity.valueOf(e.getValue()));
+                severities.put(id, Severity.valueOf(e.getValue()));
             } catch (IllegalArgumentException ignored) {
                 // 忽略
             }
@@ -93,7 +103,12 @@ public final class MapperCheckerSettings implements PersistentStateComponent<Map
                 disabled,
                 severities,
                 state.ignoreBuiltinPagination,
-                state.checkBeanProperties);
+                state.checkBeanProperties,
+                new com.mapperchecker.core.contract.RuleOptions(
+                        state.queryClassSuffixes,
+                        com.mapperchecker.core.contract.RuleOptions.parseCopyMethodLines(state.copyMethods),
+                        new HashSet<>(state.templateStatementIds),
+                        null));
     }
 
     // ---- 报告右键写入 ----

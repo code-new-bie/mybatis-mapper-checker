@@ -17,7 +17,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 端到端：Java 接口 / DAO + Mapper XML → 报告。覆盖 MMC001 / 002 / 003、抑制、多消费者。
+ * 端到端：Java 接口 / DAO + Mapper XML → 报告。覆盖 DAL-001 / 002 / 003、抑制、多消费者。
  */
 public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase {
 
@@ -68,7 +68,7 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
                 }
                 """);
         CheckRunner.Outcome o = runProject(CheckSettings.defaults());
-        List<ContractIssue> issues = ofRule(o, RuleId.MMC001);
+        List<ContractIssue> issues = ofRule(o, RuleId.DAL_001);
         assertEquals(1, issues.size());
         ContractIssue issue = issues.get(0);
         assertEquals("poiId", issue.parameterName());
@@ -86,7 +86,7 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
         assertEquals("select", ((com.intellij.psi.xml.XmlTag) o.reported().get(0).mapperElement()).getName());
     }
 
-    public void testMMC002接口方法无XML无注解() {
+    public void testDAL005接口方法无XML无注解() {
         addOrderMapperXml("<select id=\"a\">SELECT 1</select>");
         myFixture.addClass("""
                 package com.example.dao;
@@ -100,7 +100,7 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
                 }
                 """);
         CheckRunner.Outcome o = runProject(CheckSettings.defaults());
-        List<ContractIssue> issues = ofRule(o, RuleId.MMC002);
+        List<ContractIssue> issues = ofRule(o, RuleId.DAL_005);
         assertEquals(1, issues.size());
         assertEquals(NS + ".missing", issues.get(0).statementId());
         assertEquals(Confidence.HIGH, issues.get(0).confidence());
@@ -108,7 +108,7 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
         assertEquals(UnresolvedReason.PROVIDER, o.result().unresolved().get(0).reason());
     }
 
-    public void testMMC003_XML与注解同时存在_多文件() {
+    public void testDAL006_XML与注解同时存在_多文件() {
         myFixture.addFileToProject("mapper/mysql/OrderMapper.xml", "<mapper namespace=\"" + NS + "\"><select id=\"both\">1</select><select id=\"dup\">1</select></mapper>");
         myFixture.addFileToProject("mapper/oracle/OrderMapper.xml", "<mapper namespace=\"" + NS + "\"><select id=\"dup\">2</select></mapper>");
         myFixture.addClass("""
@@ -120,7 +120,7 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
                 }
                 """);
         CheckRunner.Outcome o = runProject(CheckSettings.defaults());
-        List<ContractIssue> issues = ofRule(o, RuleId.MMC003);
+        List<ContractIssue> issues = ofRule(o, RuleId.DAL_006);
         assertEquals(2, issues.size());
         ContractIssue dup = issues.stream().filter(i -> i.statementId().endsWith(".dup")).findFirst().orElseThrow();
         assertEquals("可能为多数据库变体。", dup.remark());
@@ -128,7 +128,7 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
 
         // 忽略 oracle 目录后 dup 不再歧义
         CheckSettings s = new CheckSettings(List.of(), Set.of(), Set.of(), List.of("**/mapper/oracle/**"), 3, true, Set.of(), Map.of());
-        assertEquals(1, ofRule(runProject(s), RuleId.MMC003).size());
+        assertEquals(1, ofRule(runProject(s), RuleId.DAL_006).size());
     }
 
     public void test单Map参数到调用点追踪() {
@@ -153,7 +153,7 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
                 }
                 """);
         CheckRunner.Outcome o = runProject(CheckSettings.defaults());
-        List<ContractIssue> issues = ofRule(o, RuleId.MMC001);
+        List<ContractIssue> issues = ofRule(o, RuleId.DAL_001);
         assertEquals(1, issues.size());
         assertEquals("poiId", issues.get(0).parameterName());
         assertTrue(issues.get(0).primaryLocation().filePath().endsWith("OrderService.java"));
@@ -181,7 +181,7 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
                 }
                 """);
         CheckRunner.Outcome o = runProject(CheckSettings.defaults());
-        List<ContractIssue> issues = ofRule(o, RuleId.MMC001);
+        List<ContractIssue> issues = ofRule(o, RuleId.DAL_001);
         assertEquals(1, issues.size());
         assertEquals("poiId", issues.get(0).parameterName());
         assertEquals(Confidence.MEDIUM, issues.get(0).confidence());
@@ -212,7 +212,7 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
                 }
                 """);
         CheckRunner.Outcome o = runProject(CheckSettings.defaults());
-        assertTrue(ofRule(o, RuleId.MMC001).isEmpty());
+        assertTrue(ofRule(o, RuleId.DAL_001).isEmpty());
     }
 
     public void test抑制三种方式() {
@@ -222,14 +222,14 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
                 import org.apache.ibatis.annotations.Param;
                 public interface OrderMapper {
                     int q(@Param("a") Long a, @Param("b") Long b);
-                    @SuppressWarnings("MMC001")
+                    @SuppressWarnings("DAL-001")
                     int r(@Param("a") Long a, @Param("b") Long b);
                     int s(@Param("a") Long a, @Param("b") Long b); // mapper-checker: ignore
                 }
                 """);
         CheckSettings s = new CheckSettings(List.of(), Set.of(), Set.of(NS + ".q#b"), List.of(), 3, true, Set.of(), Map.of());
         CheckRunner.Outcome o = runProject(s);
-        assertTrue(ofRule(o, RuleId.MMC001).isEmpty());
+        assertTrue(ofRule(o, RuleId.DAL_001).isEmpty());
         assertEquals(3, o.result().statistics().suppressedIssues());
     }
 
@@ -244,8 +244,8 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
                 }
                 """);
         CheckSettings s = new CheckSettings(List.of("tmp*"), Set.of(NS + ".r"), Set.of(), List.of(), 3, true, Set.of(), Map.of());
-        assertTrue(ofRule(runProject(s), RuleId.MMC001).isEmpty());
-        assertEquals(2, ofRule(runProject(CheckSettings.defaults()), RuleId.MMC001).size());
+        assertTrue(ofRule(runProject(s), RuleId.DAL_001).isEmpty());
+        assertEquals(2, ofRule(runProject(CheckSettings.defaults()), RuleId.DAL_001).size());
     }
 
     public void test单文件范围() {
@@ -258,7 +258,7 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
         myFixture.addClass("package com.example.dao; import org.apache.ibatis.annotations.*; @Mapper public interface Other { int x(); }");
         CheckRunner.Outcome o = runFile(mapper, CheckSettings.defaults());
         assertEquals(1, o.result().issues().size());
-        assertEquals(RuleId.MMC001, o.result().issues().get(0).ruleId());
+        assertEquals(RuleId.DAL_001, o.result().issues().get(0).ruleId());
         assertEquals(1, o.result().statistics().mapperInterfaces());
     }
 
@@ -284,23 +284,23 @@ public class CheckRunnerEndToEndTest extends LightJavaCodeInsightFixtureTestCase
                 }
                 """);
         CheckRunner.Outcome o = runProject(CheckSettings.defaults());
-        assertEquals(1, ofRule(o, RuleId.MMC001).size());
-        assertEquals("poiId", ofRule(o, RuleId.MMC001).get(0).parameterName());
-        List<ContractIssue> nf = ofRule(o, RuleId.MMC002);
+        assertEquals(1, ofRule(o, RuleId.DAL_001).size());
+        assertEquals("poiId", ofRule(o, RuleId.DAL_001).get(0).parameterName());
+        List<ContractIssue> nf = ofRule(o, RuleId.DAL_005);
         assertEquals(1, nf.size());
         assertEquals("Order.nope", nf.get(0).statementId());
         // namespace Order 存在，所以是高置信度
         assertEquals(Confidence.HIGH, nf.get(0).confidence());
     }
 
-    public void testMMC002_namespace完全不存在时降置信度() {
+    public void testDAL005_namespace完全不存在时降置信度() {
         myFixture.addClass("""
                 package com.example.legacy;
                 import org.apache.ibatis.session.SqlSession;
                 public class Dao { private SqlSession s; public Object q() { return s.selectOne("com.other.Unknown.q", 1L); } }
                 """);
         CheckRunner.Outcome o = runProject(CheckSettings.defaults());
-        List<ContractIssue> nf = ofRule(o, RuleId.MMC002);
+        List<ContractIssue> nf = ofRule(o, RuleId.DAL_005);
         assertEquals(1, nf.size());
         assertEquals(Confidence.MEDIUM, nf.get(0).confidence());
         assertEquals("可能定义在未索引的依赖中。", nf.get(0).remark());

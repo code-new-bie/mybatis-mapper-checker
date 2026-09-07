@@ -51,14 +51,21 @@ public final class CheckRunContext {
 
     private final List<ReportedIssue> issues = new ArrayList<>();
     private final List<UnresolvedInvocation> unresolved = new ArrayList<>();
+    private final List<ReportedExemption> exempted = new ArrayList<>();
     private final Set<String> seenIssueKeys = new HashSet<>();
+    private final com.mapperchecker.idea.suppress.ExemptionService exemptions;
 
     /**
      * 跨方法多消费者判定：参数引用位置（文件+偏移）→ 是否被任一 statement 使用。
-     * 运行结束时，被任一 statement 使用过的位置上的 MMC001 全部丢弃。
+     * 运行结束时，被任一 statement 使用过的位置上的 DAL-001 全部丢弃。
      */
     private final Map<String, Boolean> crossMethodUsage = new HashMap<>();
     private final List<ReportedIssue> crossMethodIssues = new ArrayList<>();
+
+    /** Query 类级聚合（DAL-010 / 011）：实体全限定名 → 关联 statement 与被引用的属性根名。 */
+    public final Map<String, com.mapperchecker.idea.java.QueryClassRules.Usage> queryUsages = new java.util.LinkedHashMap<>();
+    /** 被 copyProperties 当作目标的实体全限定名，字段来源静态看不见。 */
+    public final Set<String> reflectiveCopyTargets = new HashSet<>();
 
     public CheckRunContext(@NotNull Project project, @NotNull CheckSettings settings) {
         this.project = project;
@@ -70,6 +77,12 @@ public final class CheckRunContext {
         this.contractEngine = new ParameterContractEngine(settings);
         this.locationRules = new StatementLocationRules(settings);
         this.suppression = new SuppressionMatcher(settings);
+        this.exemptions = com.mapperchecker.idea.suppress.ExemptionService.getInstance(project);
+        for (com.mapperchecker.core.contract.Exemption e : exemptions.all()) {
+            if (!e.isComplete()) {
+                statistics.incInvalidExemptions();
+            }
+        }
     }
 
     // ---------------------------------------------------------------- 收集
@@ -88,6 +101,13 @@ public final class CheckRunContext {
         // 必须在这里（已在 read action 内）算好模块名，不能留到渲染阶段现查 PSI。
         String moduleName = com.mapperchecker.idea.util.Locations.moduleNameOf(javaAnchor);
         ReportedIssue reported = new ReportedIssue(issue, pointer(javaAnchor), mapperPointer(issue.secondaryLocation()), moduleName);
+        // 团队豁免：不算问题，但保留记录进汇总
+        com.mapperchecker.core.contract.Exemption exemption = exemptions.find(issue);
+        if (exemption != null) {
+            statistics.incExemptedIssues();
+            exempted.add(new ReportedExemption(reported, exemption));
+            return;
+        }
         if (crossMethod) {
             crossMethodIssues.add(reported);
         } else {
@@ -108,6 +128,12 @@ public final class CheckRunContext {
 
     /** 收尾：应用多消费者规则，统计置信度。 */
     public @NotNull CheckResult finish(@NotNull String scopeName, @NotNull List<ReportedIssue> outReported) {
+        return finish(scopeName, outReported, new ArrayList<>());
+    }
+
+    /** 收尾：应用多消费者规则，统计置信度，交出问题与豁免记录。 */
+    public @NotNull CheckResult finish(@NotNull String scopeName, @NotNull List<ReportedIssue> outReported,
+                                       @NotNull List<ReportedExemption> outExempted) {
         for (ReportedIssue r : crossMethodIssues) {
             String key = r.issue().primaryLocation().filePath() + "@" + r.issue().primaryLocation().startOffset();
             if (Boolean.TRUE.equals(crossMethodUsage.get(key))) {
@@ -132,7 +158,12 @@ public final class CheckRunContext {
             statistics.countIssue(r.issue());
         }
         outReported.addAll(issues);
-        return new CheckResult(scopeName, plain, unresolved, statistics);
+        outExempted.addAll(exempted);
+        List<com.mapperchecker.core.model.ExemptedIssue> plainExempted = new ArrayList<>(exempted.size());
+        for (ReportedExemption re : exempted) {
+            plainExempted.add(new com.mapperchecker.core.model.ExemptedIssue(re.reported().issue(), re.exemption()));
+        }
+        return new CheckResult(scopeName, plain, unresolved, plainExempted, statistics);
     }
 
     // ---------------------------------------------------------------- PSI 指针

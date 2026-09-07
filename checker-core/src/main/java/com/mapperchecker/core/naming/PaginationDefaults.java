@@ -5,7 +5,7 @@ import java.util.Set;
 
 /**
  * 内置分页 / 排序参数名单。PageHelper、MyBatis-Plus、老式手写分页都会把这些参数放进参数对象，
- * 但 SQL 里不引用（由拦截器拼 LIMIT），逐个报 MMC001 全是误报。默认开启忽略，设置里可关闭或补充。
+ * 但 SQL 里不引用（由拦截器拼 LIMIT），逐个报 DAL-001 全是误报。默认开启忽略，设置里可关闭或补充。
  */
 public final class PaginationDefaults {
 

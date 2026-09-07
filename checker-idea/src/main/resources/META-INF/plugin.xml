@@ -25,6 +25,12 @@
                           enabledByDefault="true" level="WARNING"
                           implementationClass="com.mapperchecker.idea.inspection.MapperContractGlobalInspection"/>
 
+        <!-- 纯 Java 规则实时提示：默认关闭，由设置项 realtimeJavaRules 控制，关闭时不产生任何提示 -->
+        <localInspection language="JAVA" shortName="MyBatisMapperJavaRules"
+                         bundle="messages.MapperCheckerBundle" key="inspection.java.rules.display.name" groupKey="inspection.group"
+                         enabledByDefault="true" level="WARNING"
+                         implementationClass="com.mapperchecker.idea.inspection.JavaRulesLocalInspection"/>
+
         <!-- 设置 -->
         <projectConfigurable parentId="tools" instance="com.mapperchecker.idea.settings.MapperCheckerConfigurable"
                              id="com.mapperchecker.settings" bundle="messages.MapperCheckerBundle" key="settings.title"/>

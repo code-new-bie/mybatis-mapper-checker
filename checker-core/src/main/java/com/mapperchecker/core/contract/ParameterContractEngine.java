@@ -18,7 +18,7 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * MMC001：Java 侧参数与 Mapper 侧参数做差集。方案第 11 节。
+ * DAL-001：Java 侧参数与 Mapper 侧参数做差集。方案第 11 节。
  * <pre>
  * 根级引用：候选 = Java 侧 rootName（含别名组）集合 − Mapper 侧 rootName 集合
  * 属性级引用（BEAN_PROPERTY）：propertyPath 未被任一 Mapper 路径覆盖（等于或以其为前缀）即为未使用
@@ -41,11 +41,11 @@ public final class ParameterContractEngine {
     /**
      * @param invocation Java 侧调用
      * @param statement  已解析的 Mapper statement
-     * @return MMC001 问题列表；不产生问题时为空列表
+     * @return DAL-001 问题列表；不产生问题时为空列表
      */
     public List<ContractIssue> check(DaoInvocation invocation, ResolvedStatement statement) {
         List<ContractIssue> issues = new ArrayList<>();
-        if (!settings.isEnabled(RuleId.MMC001)) {
+        if (!settings.isEnabled(RuleId.DAL_001)) {
             return issues;
         }
         if (invocation == null || statement == null || !invocation.hasComparableParameters()) {
@@ -112,14 +112,14 @@ public final class ParameterContractEngine {
         String shortId = invocation.shortStatementId();
         String message;
         if (property) {
-            message = Messages.get("issue.MMC001.property", ref.ownerName(), ref.propertyPath(), shortId);
+            message = Messages.get("issue.DAL-001.property", ref.ownerName(), ref.propertyPath(), shortId);
         } else {
             boolean declared = invocation.kind() == InvocationKind.MAPPER_METHOD
                     && (ref.sourceType() == ParameterSourceType.PARAM_ANNOTATION
                     || ref.sourceType() == ParameterSourceType.METHOD_PARAM);
             message = declared
-                    ? Messages.get("issue.MMC001.declared", ref.rootName(), shortId)
-                    : Messages.get("issue.MMC001.passed", ref.rootName(), shortId);
+                    ? Messages.get("issue.DAL-001.declared", ref.rootName(), shortId)
+                    : Messages.get("issue.DAL-001.passed", ref.rootName(), shortId);
         }
 
         Confidence confidence = ref.confidence();
@@ -142,8 +142,8 @@ public final class ParameterContractEngine {
         }
 
         return new ContractIssue(
-                RuleId.MMC001,
-                settings.severityOf(RuleId.MMC001),
+                RuleId.DAL_001,
+                settings.severityOf(RuleId.DAL_001),
                 confidence,
                 message,
                 remark.toString(),

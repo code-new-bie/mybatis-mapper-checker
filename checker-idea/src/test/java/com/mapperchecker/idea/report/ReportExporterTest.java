@@ -17,7 +17,7 @@ import java.util.List;
 public class ReportExporterTest extends TestCase {
 
     private static CheckResult sample() {
-        ContractIssue i = new ContractIssue(RuleId.MMC001, Severity.WARNING, Confidence.MEDIUM,
+        ContractIssue i = new ContractIssue(RuleId.DAL_001, Severity.WARNING, Confidence.MEDIUM,
                 "参数 'poiId' 已传入 'OrderMapper.q'，但对应 Mapper SQL 未使用该参数。",
                 "备注|含竖线", "poiId", "com.example.dao.OrderMapper.q",
                 List.of("OrderDao.query()", "OrderDao.build()"),
@@ -35,10 +35,10 @@ public class ReportExporterTest extends TestCase {
         String md = ReportExporter.toMarkdown(sample());
         assertTrue(md.contains("# MyBatis Mapper Checker 报告"));
         assertTrue(md.contains("范围：整个项目"));
-        assertTrue(md.contains("| MMC001 | poiId | com.example.dao.OrderMapper.q | OrderDao.java:42 | 中 |"));
+        assertTrue(md.contains("| DAL-001 | poiId | com.example.dao.OrderMapper.q | OrderDao.java:42 | 中 |"));
         // 详情含完整文案、完整路径与行号、备注、调用路径
         assertTrue(md.contains("### com.example.dao.OrderMapper.q"));
-        assertTrue(md.contains("**MMC001** 参数 'poiId' 已传入 'OrderMapper.q'，但对应 Mapper SQL 未使用该参数。"));
+        assertTrue(md.contains("**DAL-001** 参数 'poiId' 已传入 'OrderMapper.q'，但对应 Mapper SQL 未使用该参数。"));
         assertTrue(md.contains("Java 位置：src/OrderDao.java:42"));
         assertTrue(md.contains("Mapper 位置：mapper/OrderMapper.xml:3"));
         assertTrue(md.contains("备注：备注|含竖线"));
@@ -50,10 +50,10 @@ public class ReportExporterTest extends TestCase {
     public void testCsv() {
         String csv = ReportExporter.toCsv(sample());
         String[] lines = csv.split("\n");
-        assertEquals("规则,参数或属性,statement,说明,Java 文件,Java 行,Mapper 文件,Mapper 行,置信度,备注,调用路径", lines[0]);
+        assertEquals("状态,规则,参数或属性,statement,说明,Java 文件,Java 行,Mapper 文件,Mapper 行,置信度,备注,调用路径,豁免人,豁免时间,豁免理由", lines[0]);
         // 中文逗号不触发 CSV 引号
-        assertTrue(lines[1], lines[1].startsWith("MMC001,poiId,com.example.dao.OrderMapper.q,参数 'poiId' 已传入 'OrderMapper.q'，但对应 Mapper SQL 未使用该参数。,src/OrderDao.java,42,mapper/OrderMapper.xml,3,中,备注|含竖线,"));
-        assertTrue(lines[1].endsWith("OrderDao.query() -> OrderDao.build()"));
+        assertTrue(lines[1], lines[1].startsWith("问题,DAL-001,poiId,com.example.dao.OrderMapper.q,参数 'poiId' 已传入 'OrderMapper.q'，但对应 Mapper SQL 未使用该参数。,src/OrderDao.java,42,mapper/OrderMapper.xml,3,中,备注|含竖线,"));
+        assertTrue(lines[1].endsWith("OrderDao.query() -> OrderDao.build(),,,"));
     }
 
     public void test空报告() {

@@ -18,11 +18,24 @@ public interface OrderMapper {
 </select>
 ```
 
+规则编号沿用团队规范《开发规范：Query 与 Mapper 绑定》，11 条全部覆盖：
+
 | 规则 | 含义 | 默认级别 |
 |---|---|---|
-| MMC001 | 参数已声明或传入，但 Mapper SQL 未使用 | Warning |
-| MMC002 | statement 不存在（接口方法既无 XML 也无 SQL 注解） | Error |
-| MMC003 | statement 存在多个候选，无法确定目标 | Warning |
+| DAL-001 | 参数已声明或传入，但 Mapper SQL 未使用 | Warning |
+| DAL-002 | Mapper 引用了实体类里不存在的属性（改字段名未同步 XML） | Error |
+| DAL-003 | 模板语句里 `<if test="a">` 块内绑定的却是 `#{b}` | Error |
+| DAL-004 | `copyProperties` 参数顺序写反，空对象被当作拷贝源 | Error |
+| DAL-005 | statement 不存在（接口方法既无 XML 也无 SQL 注解） | Error |
+| DAL-006 | statement 存在多个候选，无法确定目标 | Warning |
+| DAL-010 | 调用方 set 了字段，但 Query 类关联的所有语句都不引用它 | Warning |
+| DAL-011 | Query 类死字段：既无人 set 也无语句引用 | Weak Warning |
+| DAL-020 | transform / convert 方法内使用反射拷贝 | Warning |
+| DAL-021 | 跨模块同名 Query 类 | Warning |
+| DAL-022 | DAO 方法的 Query 参数未注解为 `@Param("query")` | Weak Warning |
+| DAL-030 | 跨层转换 `setA(x.getB())` 改了字段名（拼写相近 / 单复数） | Warning |
+
+DAL-010 / 011 / 021 需要全局信息，只在 Module 或整项目范围运行。
 
 覆盖的 Java 写法：Mapper 接口 `@Param` / 无 `@Param` 别名组、实体参数逐属性比对（含 `#{q.prop}` 与 `<if test="q.prop">` 路径）、单 Map 参数到调用点的 `put` 追踪、跨方法构造的参数对象、Bean setter、`SqlSession` 与 iBatis 2 `SqlMapClient` 字符串调用。
 
@@ -37,20 +50,34 @@ public interface OrderMapper {
 - Tools → MyBatis Mapper Checker → 检查整个项目
 - Analyze → Inspect Code，勾选 MyBatis Mapper 参数契约（批量模式）
 
-结果在底部工具窗口 `MyBatis Mapper Checker` 中，按 Module → 文件分组，带置信度与备注。双击跳到 Java 位置，右键可跳 Mapper、忽略此处 / 参数 / statement、导出 Markdown / CSV。
+结果在底部工具窗口 `MyBatis Mapper Checker` 中，按 Module → 文件分组，带置信度与备注。双击跳到 Java 位置，右键可跳 Mapper、豁免此处、忽略此处 / 参数 / statement、导出 Markdown / CSV。
 
-编辑器中不会出现任何实时波浪线。
+编辑器默认不出现任何实时波浪线。设置里打开"实时提示纯 Java 规则"后，DAL-004 / 020 / 022 / 030 这四条不依赖 Mapper 的规则会在编辑器里即时提示。
 
-## 抑制
+## 抑制与豁免
+
+个人 / 项目级抑制，不留痕：
 
 ```java
-@SuppressWarnings("MMC001")
+@SuppressWarnings("DAL-001")
 int query(@Param("a") Long a, @Param("b") Long b);
 
 params.put("debugFlag", flag); // mapper-checker: ignore
 ```
 
-设置页（Settings → Tools → MyBatis Mapper Checker）可配置忽略参数（支持 `page*`）、忽略 statement、组合抑制、忽略路径模式（如 `**/mapper/oracle/**`）、跨方法追踪深度、严格 / 兼容可见性模式、规则启停与级别。配置存放在 `.idea/mybatis-mapper-checker.xml`。
+团队级豁免，进版本库、报告里仍可见（"已豁免"分组）。项目根或任一 Module 根下的 `.binding-scan-ignore.yml`：
+
+```yaml
+- rule: DAL-010                         # 省略则匹配该 target 的全部规则
+  target: com.example.OrderQuery#poiId  # 也可只写 statement：com.example.dao.OrderMapper.legacy
+  reason: 由拦截器注入
+  by: 张三
+  at: 2026-09-07
+```
+
+`reason` / `by` / `at` 缺一条即无效，报告会提示。报告右键"豁免此处"会自动追加一条。
+
+设置页（Settings → Tools → MyBatis Mapper Checker）可配置忽略参数（支持 `page*`）、忽略 statement、组合抑制、忽略路径模式（如 `**/mapper/oracle/**`）、跨方法追踪深度、严格 / 兼容可见性模式、规则启停与级别、Query 类后缀、拷贝方法源参数位置、模板 statement 列表、实时提示开关。配置存放在 `.idea/mybatis-mapper-checker.xml`。
 
 ## 开发
 

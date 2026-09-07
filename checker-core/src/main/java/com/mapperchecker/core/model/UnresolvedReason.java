@@ -28,6 +28,10 @@ public enum UnresolvedReason {
     BEAN_NO_SETTER,
     /** Bean 由 builder 链构造。 */
     BEAN_BUILDER,
+    /** 参数对象被传给反射拷贝（copyProperties 等），字段来源无法静态确认。 */
+    REFLECTIVE_COPY,
+    /** statement 只解析了一部分（include 循环 / 动态 refid / 注解 SQL 含不可求值片段），未做参数比对。 */
+    PARTIAL_STATEMENT,
     /** 其他无法归类的情形。 */
     OTHER
 }

@@ -26,8 +26,11 @@ import java.util.List;
  */
 public final class CheckRunner {
 
-    /** 运行产物：core 结果 + 可导航问题。 */
-    public record Outcome(CheckResult result, List<ReportedIssue> reported) {
+    /** 运行产物：core 结果 + 可导航问题 + 可导航的已豁免记录。 */
+    public record Outcome(CheckResult result, List<ReportedIssue> reported, List<ReportedExemption> exempted) {
+        public Outcome(CheckResult result, List<ReportedIssue> reported) {
+            this(result, reported, List.of());
+        }
     }
 
     private final Project project;
@@ -50,14 +53,37 @@ public final class CheckRunner {
         InvocationDiscovery.Found found = read(indicator, () -> {
             GlobalSearchScope ds = scope.discoveryScope(project);
             if (ds != null) {
-                return discovery.discover(ds);
+                return discovery.discover(ds, indicator);
             }
             return discovery.discoverInFiles(scope.files);
         });
 
+        // 纯 Java 规则的候选文件：Module / 项目范围用词索引找，文件范围就是所选文件
+        GlobalSearchScope discoveryScope = scope.discoveryScope(project);
+        List<PsiFile> javaFiles = read(indicator, () -> {
+            if (discoveryScope != null) {
+                return discovery.findJavaFilesForRules(discoveryScope, settings.rules(), indicator);
+            }
+            List<PsiFile> out = new ArrayList<>();
+            PsiManager pm = PsiManager.getInstance(project);
+            for (VirtualFile vf : scope.files) {
+                PsiFile f = pm.findFile(vf);
+                if (f != null) {
+                    out.add(f);
+                }
+            }
+            return out;
+        });
+
         GlobalSearchScope callSiteScope = scope.callSiteScope(project);
-        int total = found.mapperInterfaces().size() + found.stringCalls().size();
+        int total = found.mapperInterfaces().size() + found.stringCalls().size() + javaFiles.size()
+                + (discoveryScope != null ? 2 : 0);
         int done = 0;
+        if (indicator != null) {
+            indicator.setText2("");
+            indicator.setText(MapperCheckerBundle.message("task.discovery.done",
+                    found.mapperInterfaces().size(), found.stringCalls().size()));
+        }
 
         for (PsiClass mapper : found.mapperInterfaces()) {
             progress(indicator, ++done, total);
@@ -77,13 +103,37 @@ public final class CheckRunner {
                 return null;
             });
         }
+        for (PsiFile file : javaFiles) {
+            progress(indicator, ++done, total);
+            read(indicator, () -> {
+                if (file.isValid()) {
+                    engine.javaRules().checkJavaFile(file);
+                }
+                return null;
+            });
+        }
+        if (discoveryScope != null) {
+            // 全局规则：Query 类级聚合（DAL-010 / 011），要等所有 Mapper 与 Java 文件都看完
+            progress(indicator, ++done, total);
+            read(indicator, () -> {
+                engine.checkQueryClasses(indicator);
+                return null;
+            });
+            // 全局规则：跨模块同名 Query 类（DAL-021）
+            progress(indicator, ++done, total);
+            read(indicator, () -> {
+                engine.javaRules().checkDuplicateQueryClasses(discoveryScope);
+                return null;
+            });
+        }
         for (VirtualFile f : scope.files) {
             ctx.statistics.incScannedFiles();
         }
 
         List<ReportedIssue> reported = new ArrayList<>();
-        CheckResult result = read(indicator, () -> ctx.finish(scope.displayName(), reported));
-        return new Outcome(result, reported);
+        List<ReportedExemption> exempted = new ArrayList<>();
+        CheckResult result = read(indicator, () -> ctx.finish(scope.displayName(), reported, exempted));
+        return new Outcome(result, reported, exempted);
     }
 
     private <T> T read(@Nullable ProgressIndicator indicator, @NotNull java.util.concurrent.Callable<T> action) {

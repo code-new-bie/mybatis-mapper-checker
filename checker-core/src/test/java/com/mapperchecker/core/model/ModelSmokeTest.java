@@ -55,9 +55,9 @@ class ModelSmokeTest {
 
     @Test
     void 规则默认级别() {
-        assertEquals(Severity.WARNING, RuleId.MMC001.defaultSeverity());
-        assertEquals(Severity.ERROR, RuleId.MMC002.defaultSeverity());
-        assertEquals(Severity.WARNING, RuleId.MMC003.defaultSeverity());
+        assertEquals(Severity.WARNING, RuleId.DAL_001.defaultSeverity());
+        assertEquals(Severity.ERROR, RuleId.DAL_005.defaultSeverity());
+        assertEquals(Severity.WARNING, RuleId.DAL_006.defaultSeverity());
     }
 
     @Test

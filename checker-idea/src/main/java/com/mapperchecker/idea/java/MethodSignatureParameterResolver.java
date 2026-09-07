@@ -124,7 +124,7 @@ public final class MethodSignatureParameterResolver {
     }
 
     /** @Param 的 value；无注解或值不是字面量时返回 null。 */
-    static @Nullable String paramAnnotationValue(@NotNull PsiParameter p) {
+    public static @Nullable String paramAnnotationValue(@NotNull PsiParameter p) {
         PsiAnnotation a = p.getAnnotation(MyBatisNames.PARAM);
         if (a == null) {
             return null;

@@ -11,12 +11,12 @@ import java.util.Objects;
  * @param confidence        置信度
  * @param message           中文主文案
  * @param remark            中文备注，可为空串
- * @param parameterName     涉及的参数名（MMC001），其他规则为空串
+ * @param parameterName     涉及的参数名（DAL-001），其他规则为空串
  * @param statementId       涉及的 statement 完整 id
  * @param callPath          跨方法调用路径，无则空列表
  * @param primaryLocation   报告双击跳转位置（Java 侧）
  * @param secondaryLocation Mapper statement 位置，未知时为 UNKNOWN
- * @param candidates        MMC003 的候选位置列表；其他规则为空列表
+ * @param candidates        DAL-006 的候选位置列表；其他规则为空列表
  */
 public record ContractIssue(
         RuleId ruleId,

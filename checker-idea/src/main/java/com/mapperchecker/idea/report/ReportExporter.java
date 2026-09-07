@@ -35,7 +35,12 @@ public final class ReportExporter {
                 .append("，已抑制 ").append(s.suppressedIssues()).append('\n');
         sb.append("- 问题：").append(s.totalIssues())
                 .append("（高 ").append(s.highIssues()).append(" / 中 ").append(s.mediumIssues())
-                .append(" / 低 ").append(s.lowIssues()).append("）\n\n");
+                .append(" / 低 ").append(s.lowIssues()).append("）\n");
+        sb.append("- 已豁免：").append(s.exemptedIssues());
+        if (s.invalidExemptions() > 0) {
+            sb.append("，另有 ").append(s.invalidExemptions()).append(" 条豁免记录缺 reason / by / at 未生效");
+        }
+        sb.append("\n\n");
 
         sb.append("## 问题概览\n\n");
         if (result.issues().isEmpty()) {
@@ -43,7 +48,7 @@ public final class ReportExporter {
         } else {
             sb.append("| 规则 | 参数 / 属性 | statement | Java 位置 | 置信度 |\n|---|---|---|---|---|\n");
             for (ContractIssue i : result.issues()) {
-                sb.append("| ").append(i.ruleId())
+                sb.append("| ").append(i.ruleId().code())
                         .append(" | ").append(escape(i.parameterName()))
                         .append(" | ").append(escape(i.statementId()))
                         .append(" | ").append(escape(i.primaryLocation().display()))
@@ -60,7 +65,7 @@ public final class ReportExporter {
             for (Map.Entry<String, List<ContractIssue>> e : byStatement.entrySet()) {
                 sb.append("### ").append(e.getKey()).append("\n\n");
                 for (ContractIssue i : e.getValue()) {
-                    sb.append("- **").append(i.ruleId()).append("** ").append(i.message()).append('\n');
+                    sb.append("- **").append(i.ruleId().code()).append("** ").append(i.message()).append('\n');
                     if (!i.parameterName().isEmpty()) {
                         sb.append("  - 参数 / 属性：`").append(i.parameterName()).append("`\n");
                     }
@@ -86,6 +91,27 @@ public final class ReportExporter {
             }
         }
 
+        sb.append("## 已豁免（已人工确认，不算问题）\n\n");
+        if (result.exempted().isEmpty()) {
+            sb.append("无\n\n");
+        } else {
+            sb.append("| 规则 | 参数 / 属性 | statement | Java 位置 | 豁免人 | 时间 | 理由 | 记录位置 |\n|---|---|---|---|---|---|---|---|\n");
+            for (com.mapperchecker.core.model.ExemptedIssue e : result.exempted()) {
+                ContractIssue i = e.issue();
+                var x = e.exemption();
+                sb.append("| ").append(i.ruleId().code())
+                        .append(" | ").append(escape(i.parameterName()))
+                        .append(" | ").append(escape(i.statementId()))
+                        .append(" | ").append(escape(fullLocation(i.primaryLocation())))
+                        .append(" | ").append(escape(x.by()))
+                        .append(" | ").append(escape(x.at()))
+                        .append(" | ").append(escape(x.reason()))
+                        .append(" | ").append(escape(x.sourcePath().isEmpty() ? "-" : x.sourcePath() + ":" + x.line()))
+                        .append(" |\n");
+            }
+            sb.append('\n');
+        }
+
         sb.append("## 无法解析\n\n");
         if (result.unresolved().isEmpty()) {
             sb.append("无\n");
@@ -104,9 +130,10 @@ public final class ReportExporter {
 
     public static @NotNull String toCsv(@NotNull CheckResult result) {
         StringBuilder sb = new StringBuilder();
-        sb.append("规则,参数或属性,statement,说明,Java 文件,Java 行,Mapper 文件,Mapper 行,置信度,备注,调用路径\n");
-        for (ContractIssue i : result.issues()) {
-            sb.append(csv(i.ruleId().name())).append(',')
+        sb.append("状态,规则,参数或属性,statement,说明,Java 文件,Java 行,Mapper 文件,Mapper 行,置信度,备注,调用路径,豁免人,豁免时间,豁免理由\n");
+        for (com.mapperchecker.core.model.ExemptedIssue e : result.exempted()) {
+            ContractIssue i = e.issue();
+            sb.append("已豁免,").append(csv(i.ruleId().code())).append(',')
                     .append(csv(i.parameterName())).append(',')
                     .append(csv(i.statementId())).append(',')
                     .append(csv(i.message())).append(',')
@@ -116,7 +143,23 @@ public final class ReportExporter {
                     .append(csv(lineOf(i.secondaryLocation()))).append(',')
                     .append(csv(confidence(i))).append(',')
                     .append(csv(i.remark())).append(',')
-                    .append(csv(String.join(" -> ", i.callPath()))).append('\n');
+                    .append(csv(String.join(" -> ", i.callPath()))).append(',')
+                    .append(csv(e.exemption().by())).append(',')
+                    .append(csv(e.exemption().at())).append(',')
+                    .append(csv(e.exemption().reason())).append('\n');
+        }
+        for (ContractIssue i : result.issues()) {
+            sb.append("问题,").append(csv(i.ruleId().code())).append(',')
+                    .append(csv(i.parameterName())).append(',')
+                    .append(csv(i.statementId())).append(',')
+                    .append(csv(i.message())).append(',')
+                    .append(csv(i.primaryLocation().filePath())).append(',')
+                    .append(csv(lineOf(i.primaryLocation()))).append(',')
+                    .append(csv(i.secondaryLocation().isKnown() ? i.secondaryLocation().filePath() : "")).append(',')
+                    .append(csv(lineOf(i.secondaryLocation()))).append(',')
+                    .append(csv(confidence(i))).append(',')
+                    .append(csv(i.remark())).append(',')
+                    .append(csv(String.join(" -> ", i.callPath()))).append(",,,\n");
         }
         return sb.toString();
     }

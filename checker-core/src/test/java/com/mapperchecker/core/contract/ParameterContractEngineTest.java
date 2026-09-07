@@ -47,7 +47,7 @@ class ParameterContractEngineTest {
                 statement("merchantId", "status"));
         assertEquals(1, issues.size());
         ContractIssue issue = issues.get(0);
-        assertEquals(RuleId.MMC001, issue.ruleId());
+        assertEquals(RuleId.DAL_001, issue.ruleId());
         assertEquals(Severity.WARNING, issue.severity());
         assertEquals(Confidence.HIGH, issue.confidence());
         assertEquals("poiId", issue.parameterName());
@@ -132,7 +132,7 @@ class ParameterContractEngineTest {
 
     @Test
     void 规则关闭() {
-        var settings = new CheckSettings(List.of(), Set.of(), Set.of(), List.of(), 3, true, Set.of(RuleId.MMC001), Map.of());
+        var settings = new CheckSettings(List.of(), Set.of(), Set.of(), List.of(), 3, true, Set.of(RuleId.DAL_001), Map.of());
         var engine = new ParameterContractEngine(settings);
         assertTrue(engine.check(invocation(InvocationKind.MAPPER_METHOD, List.of(param("a"))), statement("x")).isEmpty());
     }
@@ -140,7 +140,7 @@ class ParameterContractEngineTest {
     @Test
     void 级别覆盖() {
         var settings = new CheckSettings(List.of(), Set.of(), Set.of(), List.of(), 3, true, Set.of(),
-                Map.of(RuleId.MMC001, Severity.ERROR));
+                Map.of(RuleId.DAL_001, Severity.ERROR));
         var engine = new ParameterContractEngine(settings);
         assertEquals(Severity.ERROR, engine.check(invocation(InvocationKind.MAPPER_METHOD, List.of(param("a"))),
                 statement("x")).get(0).severity());

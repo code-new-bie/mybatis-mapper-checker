@@ -40,17 +40,17 @@
 - [x] 5.2 忽略路径模式（MapperRepository 过滤）
 - [x] 5.3 Heavy Test（ModuleVisibilityHeavyTest 4 例：同模块 / 传递依赖 / sibling 不可见 / 兼容 fallback）
 
-## 阶段 6 MMC002 / MMC003
+## 阶段 6 DAL-005 / DAL-006
 - [x] 6.1 core：StatementLocationRules
-- [x] 6.2 StatementLocator（接口方法 XML + 注解合并；两者皆有 → MMC003；namespace 不存在 → 中置信度）
+- [x] 6.2 StatementLocator（接口方法 XML + 注解合并；两者皆有 → DAL-006；namespace 不存在 → 中置信度）
 - [x] 6.3 多数据库变体备注、jar 内 statement 标记
 
-## 阶段 7 MMC001 声明级
+## 阶段 7 DAL-001 声明级
 - [x] 7.1 core：ParameterContractEngine（差集、别名组、大小写提示、Bean 备注、跨方法降级）
 - [x] 7.2 声明级接入（ContractCheckEngine.checkMapperInterface）
 - [x] 7.3 忽略参数（通配）/ 忽略 statement 过滤
 
-## 阶段 8 MMC001 数据流
+## 阶段 8 DAL-001 数据流
 - [x] 8.1 Map：put / 常量 key / Map.of / ofEntries / ImmutableMap.of / builder / 双花括号 / Maps.newHashMap / putAll / remove / clear / 逃逸 / 调用后 put 不计
 - [x] 8.2 Bean：setter / Introspector 规则 / 链式 setter / 无 setter / builder 链 → UNRESOLVED
 - [x] 8.3 跨方法：深度、循环、多实现、库代码、多 return 并集、返回后补充、调用路径、多消费者（CheckRunContext.finish）
@@ -68,7 +68,7 @@
 ## 阶段 10 抑制与设置
 - [x] 10.1 MapperCheckerSettings（Project 级，.idea/mybatis-mapper-checker.xml）
 - [x] 10.2 MapperCheckerConfigurable 设置页
-- [x] 10.3 SuppressionMatcher（组合 / @SuppressWarnings("MMC001") / 行注释 mapper-checker: ignore）
+- [x] 10.3 SuppressionMatcher（组合 / @SuppressWarnings("DAL-001") / 行注释 mapper-checker: ignore）
 
 ## 阶段 11 导航
 - [x] 11.1 MapperGotoDeclarationHandler（接口方法名、字符串 statementId）
@@ -87,11 +87,24 @@
 - [x] 导出报告详情：Markdown 增加按 statement 分组的详情（完整文案、参数 / 属性、Java 与 Mapper 完整路径和行号、备注、调用路径、候选）；CSV 增加说明、文件、行号列
 - [ ] 第二轮真机试用
 
+## 团队规范接入（2026-09-07，《开发规范：Query 与 Mapper 绑定》）
+- [x] 规则编号切换为 DAL（MMC001/002/003 → DAL-001/005/006，`RuleId.fromCode` 兼容旧值），文案 / 设置 / 抑制注解同步
+- [x] core：RuleOptions（Query 后缀、拷贝方法源位置表、模板 statement 列表、转换方法前缀）、NameSimilarity、UnresolvedReason.REFLECTIVE_COPY / PARTIAL_STATEMENT
+- [x] DAL-004 / 020 / 030（JavaRules.checkJavaFile）、DAL-022（checkQueryParamNaming）、DAL-021（checkDuplicateQueryClasses）
+- [x] DAL-010 / 011（QueryClassRules：Query 使用登记 + setter 引用搜索）
+- [x] DAL-002（MapperSideRules.checkMissingProperties，仅实体参数）、DAL-003（IfBlockCollector + checkTemplateBinding）
+- [x] partiallyParsed 与反射拷贝登记为覆盖缺口（无法解析分组）
+- [x] 豁免文件 `.binding-scan-ignore.yml`（Exemption / ExemptionFileParser / ExemptionService）：报告"已豁免"分组、右键"豁免此处"、Markdown / CSV 导出、无效记录计数
+- [x] 纯 Java 规则实时提示开关（JavaRulesLocalInspection，默认关）
+- [x] 设置页：Query 后缀 / 拷贝方法 / 模板 id / 实时开关
+- [ ] CI 无头扫描：不做（2026-09-07 决定）
+
 ## 测试总数
-- checker-core：74
-- checker-idea：86（含 Heavy 4、端到端 19）
+- checker-core：84
+- checker-idea：106（含 Heavy 4、端到端 39）
 
 ## 已知限制 / 待真机验证
 - 报告窗口、设置页、右键菜单等 Swing UI 未做自动化测试，需 `gradlew :checker-idea:runIde` 人工核对。
-- Inspect Code 入口只注册在批量模式；跨文件位置（另一方法里的 put）只在报告窗口展示。
+- Inspect Code 入口只注册在批量模式；跨文件位置（另一方法里的 put）只在报告窗口展示。实时提示只覆盖四条纯 Java 规则，默认关。
+- 豁免文件只支持"列表 + 平铺键值"形态的 YAML，锚点、多行字符串不支持。
 - 短 id（`selectList("query")`）依赖 getAllKeys 快照，key 很多的超大项目首次查询稍慢。

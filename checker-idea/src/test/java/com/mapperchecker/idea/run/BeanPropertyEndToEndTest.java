@@ -87,17 +87,25 @@ public class BeanPropertyEndToEndTest extends LightJavaCodeInsightFixtureTestCas
                 """);
         CheckRunner.Outcome o = run(CheckSettings.defaults());
         // pageNum / pageSize / orderBy 被内置分页名单忽略；address 被 address.city 覆盖；cacheKey transient 不算
-        assertEquals(Set.of("poiId", "status"), params(o, RuleId.MMC001));
+        assertEquals(Set.of("poiId", "status"), params(o, RuleId.DAL_001));
+        // 只看 DAL-001：fixture 里 query(OrderQuery q) 没写 @Param("query")，会另外正确地报一条 DAL-022
         for (ContractIssue i : o.result().issues()) {
+            if (i.ruleId() != RuleId.DAL_001) {
+                continue;
+            }
             assertEquals(Confidence.LOW, i.confidence());
             assertTrue(i.message(), i.message().startsWith("实体 'OrderQuery' 的属性 '"));
             assertTrue(i.primaryLocation().filePath().endsWith("OrderQuery.java"));
         }
         // 锚点在实体字段上，可导航
         for (ReportedIssue ri : o.reported()) {
+            if (ri.issue().ruleId() != RuleId.DAL_001) {
+                continue;
+            }
             assertNotNull(ri.javaElement());
             assertTrue(ri.javaElement().getContainingFile().getName().equals("OrderQuery.java"));
         }
+        assertEquals(1, o.result().issues().stream().filter(i -> i.ruleId() == RuleId.DAL_022).count());
     }
 
     public void test关闭分页忽略后分页属性照常报() {
@@ -105,7 +113,7 @@ public class BeanPropertyEndToEndTest extends LightJavaCodeInsightFixtureTestCas
                 "<mapper namespace=\"%s\"><select id=\"query\">SELECT #{merchantId}, #{poiId}, #{status}, #{address}</select></mapper>".formatted(NS));
         myFixture.addClass("package com.example.dao; import com.example.OrderQuery; public interface OrderMapper { int query(OrderQuery q); }");
         CheckSettings s = new CheckSettings(List.of(), Set.of(), Set.of(), List.of(), 3, true, Set.of(), Map.of(), false, true);
-        assertEquals(Set.of("orderBy", "pageNum", "pageSize"), params(run(s), RuleId.MMC001));
+        assertEquals(Set.of("orderBy", "pageNum", "pageSize"), params(run(s), RuleId.DAL_001));
     }
 
     public void test关闭实体属性检查后单Bean不报() {
@@ -113,7 +121,8 @@ public class BeanPropertyEndToEndTest extends LightJavaCodeInsightFixtureTestCas
                 "<mapper namespace=\"%s\"><select id=\"query\">SELECT 1</select></mapper>".formatted(NS));
         myFixture.addClass("package com.example.dao; import com.example.OrderQuery; public interface OrderMapper { int query(OrderQuery q); }");
         CheckSettings s = new CheckSettings(List.of(), Set.of(), Set.of(), List.of(), 3, true, Set.of(), Map.of(), true, false);
-        assertTrue(run(s).result().issues().isEmpty());
+        // 关闭实体展开后不再有 DAL-001；query(OrderQuery q) 缺 @Param("query") 的 DAL-022 仍然在
+        assertTrue(params(run(s), RuleId.DAL_001).isEmpty());
     }
 
     public void testParam_Bean按前缀展开() {
@@ -132,7 +141,7 @@ public class BeanPropertyEndToEndTest extends LightJavaCodeInsightFixtureTestCas
                 public interface OrderMapper { java.util.List<Object> query(@Param("q") OrderQuery q, @Param("extra") String extra); }
                 """);
         CheckRunner.Outcome o = run(CheckSettings.defaults());
-        assertEquals(Set.of("q.poiId"), params(o, RuleId.MMC001));
+        assertEquals(Set.of("q.poiId"), params(o, RuleId.DAL_001));
     }
 
     public void testParam_Bean整体未用只报根() {
@@ -145,7 +154,7 @@ public class BeanPropertyEndToEndTest extends LightJavaCodeInsightFixtureTestCas
                 public interface OrderMapper { int query(@Param("q") OrderQuery q, @Param("extra") String extra); }
                 """);
         CheckRunner.Outcome o = run(CheckSettings.defaults());
-        assertEquals(Set.of("q"), params(o, RuleId.MMC001));
+        assertEquals(Set.of("q"), params(o, RuleId.DAL_001));
         assertEquals(Confidence.HIGH, o.result().issues().get(0).confidence());
     }
 
@@ -180,6 +189,6 @@ public class BeanPropertyEndToEndTest extends LightJavaCodeInsightFixtureTestCas
                     }
                 }
                 """);
-        assertEquals(Set.of("poiId"), params(run(CheckSettings.defaults()), RuleId.MMC001));
+        assertEquals(Set.of("poiId"), params(run(CheckSettings.defaults()), RuleId.DAL_001));
     }
 }

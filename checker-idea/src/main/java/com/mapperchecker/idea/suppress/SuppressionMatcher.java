@@ -21,7 +21,7 @@ import java.util.Locale;
  * 三种抑制。方案 15.1。
  * <ol>
  *   <li>组合抑制：设置中的 statementId#parameterName</li>
- *   <li>@SuppressWarnings("MMC001")：参数、方法、类上都可</li>
+ *   <li>@SuppressWarnings("DAL-001")：参数、方法、类上都可</li>
  *   <li>行注释 {@code // mapper-checker: ignore}</li>
  * </ol>
  */
@@ -51,7 +51,7 @@ public final class SuppressionMatcher {
     }
 
     private static boolean suppressedByAnnotation(ContractIssue issue, PsiElement anchor) {
-        String ruleId = issue.ruleId().name();
+        String ruleId = issue.ruleId().code();
         PsiModifierListOwner owner = anchor instanceof PsiModifierListOwner o ? o
                 : PsiTreeUtil.getParentOfType(anchor, PsiModifierListOwner.class, false);
         while (owner != null) {
@@ -80,13 +80,14 @@ public final class SuppressionMatcher {
     private static boolean literalMatches(@Nullable PsiAnnotationMemberValue v, String ruleId) {
         if (v instanceof PsiLiteralExpression lit && lit.getValue() instanceof String s) {
             String t = s.trim();
-            return t.equalsIgnoreCase(ruleId) || t.equalsIgnoreCase("MMC") || t.equalsIgnoreCase("mapper-checker")
+            return t.equalsIgnoreCase(ruleId) || t.replace('_', '-').equalsIgnoreCase(ruleId)
+                    || t.equalsIgnoreCase("DAL") || t.equalsIgnoreCase("mapper-checker")
                     || t.equalsIgnoreCase("all");
         }
         return false;
     }
 
-    /** 同一行末尾有 {@code // mapper-checker: ignore}（或 ignore MMC001）。 */
+    /** 同一行末尾有 {@code // mapper-checker: ignore}（或 ignore DAL-001）。 */
     private static boolean suppressedByLineComment(PsiElement anchor) {
         PsiFile file = anchor.getContainingFile();
         if (file == null) {

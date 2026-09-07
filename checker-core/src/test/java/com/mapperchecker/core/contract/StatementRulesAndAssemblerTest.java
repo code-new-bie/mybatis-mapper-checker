@@ -70,17 +70,17 @@ class StatementRulesAndAssemblerTest {
     }
 
     @Test
-    void MMC002未找到() {
+    void DAL005未找到() {
         var rules = new StatementLocationRules(CheckSettings.defaults());
         var issues = rules.check(inv(NS + ".queryOrder"), StatementLocationRules.Lookup.notFound(false));
         assertEquals(1, issues.size());
-        assertEquals(RuleId.MMC002, issues.get(0).ruleId());
+        assertEquals(RuleId.DAL_005, issues.get(0).ruleId());
         assertEquals(Confidence.HIGH, issues.get(0).confidence());
         assertEquals("'OrderMapper.queryOrder' 未找到对应的 Mapper statement 或 SQL 注解。", issues.get(0).message());
     }
 
     @Test
-    void MMC002可能在依赖中降置信度() {
+    void DAL005可能在依赖中降置信度() {
         var rules = new StatementLocationRules(CheckSettings.defaults());
         var issues = rules.check(inv(NS + ".queryOrder"), StatementLocationRules.Lookup.notFound(true));
         assertEquals(Confidence.MEDIUM, issues.get(0).confidence());
@@ -88,13 +88,13 @@ class StatementRulesAndAssemblerTest {
     }
 
     @Test
-    void MMC003多候选列出位置() {
+    void DAL006多候选列出位置() {
         var rules = new StatementLocationRules(CheckSettings.defaults());
         var a = resolved(NS + ".queryOrder", SourceLocation.of("a/OrderMapper.xml", 1, 2, 3));
         var b = resolved(NS + ".queryOrder", SourceLocation.of("b/OrderMapper.xml", 1, 2, 3));
         var issues = rules.check(inv(NS + ".queryOrder"), new StatementLocationRules.Lookup(List.of(a, b), false, true));
         assertEquals(1, issues.size());
-        assertEquals(RuleId.MMC003, issues.get(0).ruleId());
+        assertEquals(RuleId.DAL_006, issues.get(0).ruleId());
         assertEquals(2, issues.get(0).candidates().size());
         assertEquals("可能为多数据库变体。", issues.get(0).remark());
     }

@@ -50,6 +50,10 @@ public final class MapperCheckerConfigurable implements Configurable {
     private JBCheckBox gutterIcon;
     private JBCheckBox ignorePagination;
     private JBCheckBox checkBeanProperties;
+    private JBTextArea querySuffixes;
+    private JBTextArea copyMethods;
+    private JBTextArea templateIds;
+    private JBCheckBox realtimeJavaRules;
     private final Map<RuleId, JBCheckBox> ruleEnabled = new EnumMap<>(RuleId.class);
     private final Map<RuleId, JComboBox<Severity>> ruleSeverity = new EnumMap<>(RuleId.class);
 
@@ -80,13 +84,17 @@ public final class MapperCheckerConfigurable implements Configurable {
         gutterIcon = new JBCheckBox(MapperCheckerBundle.message("settings.gutter.icon"));
         ignorePagination = new JBCheckBox(MapperCheckerBundle.message("settings.ignore.pagination"));
         checkBeanProperties = new JBCheckBox(MapperCheckerBundle.message("settings.check.bean.properties"));
+        querySuffixes = area();
+        copyMethods = area();
+        templateIds = area();
+        realtimeJavaRules = new JBCheckBox(MapperCheckerBundle.message("settings.realtime.java.rules"));
 
         JPanel rules = new JPanel(new GridLayout(RuleId.values().length + 1, 3, 8, 2));
         rules.add(new JBLabel(MapperCheckerBundle.message("settings.rule.column.rule")));
         rules.add(new JBLabel(MapperCheckerBundle.message("settings.rule.enabled")));
         rules.add(new JBLabel(MapperCheckerBundle.message("settings.rule.severity")));
         for (RuleId r : RuleId.values()) {
-            rules.add(new JBLabel(r.name() + "  " + MapperCheckerBundle.message("rule." + r.name() + ".name")));
+            rules.add(new JBLabel(r.code() + "  " + MapperCheckerBundle.message("rule." + r.code() + ".name")));
             JBCheckBox cb = new JBCheckBox();
             ruleEnabled.put(r, cb);
             rules.add(cb);
@@ -105,6 +113,12 @@ public final class MapperCheckerConfigurable implements Configurable {
                 .addSeparator()
                 .addComponent(new JBLabel("<html><b>" + MapperCheckerBundle.message("settings.rules") + "</b></html>"))
                 .addComponent(rules)
+                .addSeparator()
+                .addComponent(new JBLabel("<html><b>" + MapperCheckerBundle.message("settings.rules.section") + "</b></html>"))
+                .addLabeledComponent(MapperCheckerBundle.message("settings.query.suffixes"), scroll(querySuffixes), true)
+                .addLabeledComponent(MapperCheckerBundle.message("settings.copy.methods"), scroll(copyMethods), true)
+                .addLabeledComponent(MapperCheckerBundle.message("settings.template.ids"), scroll(templateIds), true)
+                .addComponent(realtimeJavaRules)
                 .addSeparator()
                 .addComponent(new JBLabel("<html><b>" + MapperCheckerBundle.message("settings.suppress") + "</b></html>"))
                 .addLabeledComponent(MapperCheckerBundle.message("settings.ignored.parameters"), scroll(ignoredParameters), true)
@@ -143,6 +157,10 @@ public final class MapperCheckerConfigurable implements Configurable {
         if (gutterIcon.isSelected() != s.showGutterIcon) return true;
         if (ignorePagination.isSelected() != s.ignoreBuiltinPagination) return true;
         if (checkBeanProperties.isSelected() != s.checkBeanProperties) return true;
+        if (!lines(querySuffixes).equals(s.queryClassSuffixes)) return true;
+        if (!lines(copyMethods).equals(s.copyMethods)) return true;
+        if (!lines(templateIds).equals(s.templateStatementIds)) return true;
+        if (realtimeJavaRules.isSelected() != s.realtimeJavaRules) return true;
         for (RuleId r : RuleId.values()) {
             boolean enabled = !s.disabledRules.contains(r.name());
             if (ruleEnabled.get(r).isSelected() != enabled) return true;
@@ -164,6 +182,10 @@ public final class MapperCheckerConfigurable implements Configurable {
         s.showGutterIcon = gutterIcon.isSelected();
         s.ignoreBuiltinPagination = ignorePagination.isSelected();
         s.checkBeanProperties = checkBeanProperties.isSelected();
+        s.queryClassSuffixes = new ArrayList<>(lines(querySuffixes));
+        s.copyMethods = new ArrayList<>(lines(copyMethods));
+        s.templateStatementIds = new ArrayList<>(lines(templateIds));
+        s.realtimeJavaRules = realtimeJavaRules.isSelected();
         List<String> disabled = new ArrayList<>();
         Map<String, String> severities = new HashMap<>();
         for (RuleId r : RuleId.values()) {
@@ -192,6 +214,10 @@ public final class MapperCheckerConfigurable implements Configurable {
         gutterIcon.setSelected(s.showGutterIcon);
         ignorePagination.setSelected(s.ignoreBuiltinPagination);
         checkBeanProperties.setSelected(s.checkBeanProperties);
+        querySuffixes.setText(String.join("\n", s.queryClassSuffixes));
+        copyMethods.setText(String.join("\n", s.copyMethods));
+        templateIds.setText(String.join("\n", s.templateStatementIds));
+        realtimeJavaRules.setSelected(s.realtimeJavaRules);
         for (RuleId r : RuleId.values()) {
             ruleEnabled.get(r).setSelected(!s.disabledRules.contains(r.name()));
             ruleSeverity.get(r).setSelectedItem(severityOf(s, r));

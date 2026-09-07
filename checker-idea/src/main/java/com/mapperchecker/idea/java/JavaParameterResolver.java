@@ -223,9 +223,15 @@ public final class JavaParameterResolver {
             if (parent instanceof PsiExpressionList argList && argList.getParent() instanceof PsiMethodCallExpression other
                     && other != ctx.callSite() && !isSelfOrEnclosingCallSite(other, ctx.callSite())
                     && !isReadOnlyConsumer(other)) {
-                // 传给了别的方法：对方可能修改它，无法证明
+                // 传给了别的方法：对方可能修改它，无法证明。
+                // 传给 copyProperties 之类的反射拷贝单独标记，规范要求这种情况必须显式登记为覆盖缺口。
                 PsiMethod resolved = other.resolveMethod();
-                return TraceResult.unresolved(UnresolvedReason.MAP_MUTATED,
+                String otherName = other.getMethodExpression().getReferenceName();
+                boolean reflective = otherName != null && (otherName.equals("copyProperties") || otherName.equals("copyBean")
+                        || otherName.equals("populate") || (otherName.equals("copy") && resolved != null
+                        && resolved.getContainingClass() != null && resolved.getContainingClass().getName() != null
+                        && resolved.getContainingClass().getName().contains("Bean")));
+                return TraceResult.unresolved(reflective ? UnresolvedReason.REFLECTIVE_COPY : UnresolvedReason.MAP_MUTATED,
                         resolved == null ? other.getMethodExpression().getText() + "()" : Context.describe(resolved));
             }
         }

@@ -11,6 +11,8 @@ public final class Statistics {
     private int resolvedInvocations;
     private int unresolvedInvocations;
     private int suppressedIssues;
+    private int exemptedIssues;
+    private int invalidExemptions;
     private int highIssues;
     private int mediumIssues;
     private int lowIssues;
@@ -21,6 +23,8 @@ public final class Statistics {
     public void incResolvedInvocations() { resolvedInvocations++; }
     public void incUnresolvedInvocations() { unresolvedInvocations++; }
     public void incSuppressedIssues() { suppressedIssues++; }
+    public void incExemptedIssues() { exemptedIssues++; }
+    public void incInvalidExemptions() { invalidExemptions++; }
 
     public void countIssue(ContractIssue issue) {
         switch (issue.confidence()) {
@@ -36,6 +40,8 @@ public final class Statistics {
     public int resolvedInvocations() { return resolvedInvocations; }
     public int unresolvedInvocations() { return unresolvedInvocations; }
     public int suppressedIssues() { return suppressedIssues; }
+    public int exemptedIssues() { return exemptedIssues; }
+    public int invalidExemptions() { return invalidExemptions; }
     public int highIssues() { return highIssues; }
     public int mediumIssues() { return mediumIssues; }
     public int lowIssues() { return lowIssues; }

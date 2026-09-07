@@ -36,6 +36,7 @@ import com.mapperchecker.idea.MapperCheckerBundle;
 import com.mapperchecker.idea.run.CheckRunner;
 import com.mapperchecker.idea.run.CheckScope;
 import com.mapperchecker.idea.run.ContractCheckTask;
+import com.mapperchecker.idea.run.ReportedExemption;
 import com.mapperchecker.idea.run.ReportedIssue;
 import com.mapperchecker.idea.settings.MapperCheckerConfigurable;
 import com.mapperchecker.idea.settings.MapperCheckerSettings;
@@ -87,7 +88,7 @@ public final class CheckReportPanel extends JPanel {
 
         ruleFilter.addItem(MapperCheckerBundle.message("report.filter.rule.all"));
         for (RuleId r : RuleId.values()) {
-            ruleFilter.addItem(r.name());
+            ruleFilter.addItem(r.code());
         }
         confidenceFilter.addItem(MapperCheckerBundle.message("report.filter.confidence.all"));
         for (Confidence c : Confidence.values()) {
@@ -110,12 +111,16 @@ public final class CheckReportPanel extends JPanel {
 
         tree.setRootVisible(false);
         tree.setCellRenderer(new Renderer());
-        tree.addTreeSelectionListener(e -> showDetails(selectedIssue(), selectedUnresolved()));
+        tree.addTreeSelectionListener(e -> {
+            ReportedExemption re = selectedExemption();
+            showDetails(re != null ? re.reported() : selectedIssue(), selectedUnresolved(), re);
+        });
         tree.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
                 if (e.getClickCount() == 2) {
-                    navigateToJava(selectedIssue(), selectedUnresolved());
+                    ReportedExemption re = selectedExemption();
+                    navigateToJava(re != null ? re.reported() : selectedIssue(), selectedUnresolved());
                 }
             }
         });
@@ -145,7 +150,7 @@ public final class CheckReportPanel extends JPanel {
         stats.setText(MapperCheckerBundle.message("report.stats",
                 r.scopeName(), s.mapperInterfaces(), s.daoInvocations(), s.resolvedInvocations(),
                 s.unresolvedInvocations(), s.suppressedIssues(), s.totalIssues(),
-                s.highIssues(), s.mediumIssues(), s.lowIssues()));
+                s.highIssues(), s.mediumIssues(), s.lowIssues(), s.exemptedIssues()));
         rebuildTree();
     }
 
@@ -183,6 +188,15 @@ public final class CheckReportPanel extends JPanel {
                 unresolvedNode.add(new DefaultMutableTreeNode(u));
             }
             root.add(unresolvedNode);
+
+            // 已豁免：不是问题，但必须可见（规范第六节）
+            List<ReportedExemption> exempted = outcome.exempted();
+            DefaultMutableTreeNode exemptedNode = new DefaultMutableTreeNode(
+                    MapperCheckerBundle.message("report.node.exempted", exempted.size()));
+            for (ReportedExemption re : exempted) {
+                exemptedNode.add(new DefaultMutableTreeNode(re));
+            }
+            root.add(exemptedNode);
         }
         tree.setModel(new DefaultTreeModel(root));
         TreeUtil.expand(tree, 3);
@@ -221,6 +235,15 @@ public final class CheckReportPanel extends JPanel {
         return o instanceof ReportedIssue ri ? ri : null;
     }
 
+    private @Nullable ReportedExemption selectedExemption() {
+        TreePath p = tree.getSelectionPath();
+        if (p == null) {
+            return null;
+        }
+        Object o = ((DefaultMutableTreeNode) p.getLastPathComponent()).getUserObject();
+        return o instanceof ReportedExemption re ? re : null;
+    }
+
     private @Nullable UnresolvedInvocation selectedUnresolved() {
         TreePath p = tree.getSelectionPath();
         if (p == null) {
@@ -230,11 +253,17 @@ public final class CheckReportPanel extends JPanel {
         return o instanceof UnresolvedInvocation u ? u : null;
     }
 
-    private void showDetails(@Nullable ReportedIssue ri, @Nullable UnresolvedInvocation u) {
+    private void showDetails(@Nullable ReportedIssue ri, @Nullable UnresolvedInvocation u,
+                             @Nullable ReportedExemption re) {
         if (ri != null) {
             ContractIssue i = ri.issue();
             StringBuilder sb = new StringBuilder(i.message()).append("\n\n");
-            sb.append(MapperCheckerBundle.message("report.detail.rule")).append("：").append(i.ruleId()).append('\n');
+            if (re != null) {
+                var ex = re.exemption();
+                sb.append(MapperCheckerBundle.message("report.detail.exemption",
+                        ex.reason(), ex.by(), ex.at(), ex.sourcePath() + ":" + ex.line())).append("\n\n");
+            }
+            sb.append(MapperCheckerBundle.message("report.detail.rule")).append("：").append(i.ruleId().code()).append('\n');
             if (i.secondaryLocation().isKnown()) {
                 sb.append(MapperCheckerBundle.message("report.detail.mapper")).append("：")
                         .append(i.secondaryLocation().filePath()).append('\n');
@@ -359,6 +388,12 @@ public final class CheckReportPanel extends JPanel {
             }
         });
         g.addSeparator();
+        g.add(new IssueAction("action.exempt.here") {
+            @Override
+            void apply(ReportedIssue ri) {
+                exempt(ri);
+            }
+        });
         g.add(new IssueAction("action.ignore.here") {
             @Override
             void apply(ReportedIssue ri) {
@@ -375,7 +410,7 @@ public final class CheckReportPanel extends JPanel {
 
             @Override
             boolean enabled(ReportedIssue ri) {
-                return ri.issue().ruleId() == RuleId.MMC001;
+                return ri.issue().ruleId() == RuleId.DAL_001;
             }
         });
         g.add(new IssueAction("action.ignore.statement") {
@@ -431,6 +466,48 @@ public final class CheckReportPanel extends JPanel {
         removeIf(x -> x == ri);
     }
 
+    /** 团队豁免：问一句理由，写进问题所在 Module 的 .binding-scan-ignore.yml，并挪到"已豁免"分组。 */
+    private void exempt(ReportedIssue ri) {
+        String reason = Messages.showInputDialog(project,
+                MapperCheckerBundle.message("exempt.dialog.message", ri.issue().ruleId().code(), ri.issue().suppressionKey()),
+                MapperCheckerBundle.message("exempt.dialog.title"), null);
+        if (reason == null || reason.isBlank()) {
+            return;
+        }
+        String by = System.getProperty("user.name", "");
+        String at = java.time.LocalDate.now().toString();
+        var exemption = new com.mapperchecker.core.contract.Exemption(ri.issue().ruleId(), ri.issue().suppressionKey(),
+                reason.trim(), by, at, "", 0);
+        PsiElement e = ri.javaElement();
+        VirtualFile issueFile = e == null || e.getContainingFile() == null ? null : e.getContainingFile().getVirtualFile();
+        VirtualFile written = com.mapperchecker.idea.suppress.ExemptionService.getInstance(project).append(exemption, issueFile);
+        if (written == null) {
+            Messages.showErrorDialog(project, MapperCheckerBundle.message("exempt.failed"), MapperCheckerBundle.message("exempt.dialog.title"));
+            return;
+        }
+        if (outcome == null) {
+            return;
+        }
+        List<ReportedIssue> kept = new ArrayList<>();
+        List<ContractIssue> keptPlain = new ArrayList<>();
+        for (ReportedIssue x : outcome.reported()) {
+            if (x != ri) {
+                kept.add(x);
+                keptPlain.add(x.issue());
+            }
+        }
+        List<ReportedExemption> ex = new ArrayList<>(outcome.exempted());
+        var recorded = new com.mapperchecker.core.contract.Exemption(exemption.rule(), exemption.target(), exemption.reason(),
+                exemption.by(), exemption.at(), written.getPath(), 0);
+        ex.add(new ReportedExemption(ri, recorded));
+        List<com.mapperchecker.core.model.ExemptedIssue> plainEx = new ArrayList<>(outcome.result().exempted());
+        plainEx.add(new com.mapperchecker.core.model.ExemptedIssue(ri.issue(), recorded));
+        CheckResult old = outcome.result();
+        old.statistics().incExemptedIssues();
+        outcome = new CheckRunner.Outcome(new CheckResult(old.scopeName(), keptPlain, old.unresolved(), plainEx, old.statistics()), kept, ex);
+        rebuildTree();
+    }
+
     private void removeIf(java.util.function.Predicate<ReportedIssue> pred) {
         if (outcome == null) {
             return;
@@ -444,7 +521,8 @@ public final class CheckReportPanel extends JPanel {
             }
         }
         CheckResult old = outcome.result();
-        outcome = new CheckRunner.Outcome(new CheckResult(old.scopeName(), keptPlain, old.unresolved(), old.statistics()), kept);
+        outcome = new CheckRunner.Outcome(new CheckResult(old.scopeName(), keptPlain, old.unresolved(), old.exempted(), old.statistics()),
+                kept, outcome.exempted());
         rebuildTree();
     }
 
@@ -492,9 +570,9 @@ public final class CheckReportPanel extends JPanel {
                 ContractIssue i = ri.issue();
                 boolean done = confirmed.contains(ri);
                 SimpleTextAttributes main = done ? SimpleTextAttributes.GRAYED_ATTRIBUTES : SimpleTextAttributes.REGULAR_ATTRIBUTES;
-                setIcon(i.ruleId() == RuleId.MMC002 ? AllIcons.General.Error
+                setIcon(i.ruleId() == RuleId.DAL_005 ? AllIcons.General.Error
                         : i.confidence() == Confidence.LOW ? AllIcons.General.Information : AllIcons.General.Warning);
-                append(i.ruleId().name() + "  ", SimpleTextAttributes.GRAYED_BOLD_ATTRIBUTES);
+                append(i.ruleId().code() + "  ", SimpleTextAttributes.GRAYED_BOLD_ATTRIBUTES);
                 if (!i.parameterName().isEmpty()) {
                     append(i.parameterName() + "  ", main.derive(SimpleTextAttributes.STYLE_BOLD, null, null, null));
                 }
@@ -507,6 +585,16 @@ public final class CheckReportPanel extends JPanel {
                 if (done) {
                     append(MapperCheckerBundle.message("report.confirmed.suffix"), SimpleTextAttributes.GRAYED_ATTRIBUTES);
                 }
+            } else if (o instanceof ReportedExemption re) {
+                ContractIssue i = re.reported().issue();
+                setIcon(AllIcons.Actions.Checked);
+                append(i.ruleId().code() + "  ", SimpleTextAttributes.GRAYED_BOLD_ATTRIBUTES);
+                if (!i.parameterName().isEmpty()) {
+                    append(i.parameterName() + "  ", SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                }
+                append(shortStatement(i.statementId()) + "  ", SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                append(i.primaryLocation().display() + "  ", SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                append(re.exemption().signature() + "：" + re.exemption().reason(), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
             } else if (o instanceof UnresolvedInvocation u) {
                 setIcon(AllIcons.General.Note);
                 append(MapperCheckerBundle.message("unresolved." + u.reason().name()) + "  ", SimpleTextAttributes.REGULAR_ATTRIBUTES);
