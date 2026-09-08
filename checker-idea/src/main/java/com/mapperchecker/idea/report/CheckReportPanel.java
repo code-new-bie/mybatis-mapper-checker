@@ -130,6 +130,11 @@ public final class CheckReportPanel extends JPanel {
         tree.setRootVisible(false);
         tree.setCellRenderer(new Renderer());
         tree.addTreeSelectionListener(e -> {
+            GroupNote note = selectedUserObject(GroupNote.class);
+            if (note != null) {
+                details.setText(note.note());
+                return;
+            }
             ReportedExemption re = selectedExemption();
             showDetails(re != null ? re.reported() : selectedIssue(), selectedUnresolved(), re);
         });
@@ -168,36 +173,34 @@ public final class CheckReportPanel extends JPanel {
         stats.setText(MapperCheckerBundle.message("report.stats",
                 r.scopeName(), s.mapperInterfaces(), s.daoInvocations(), s.resolvedInvocations(),
                 s.unresolvedInvocations(), s.suppressedIssues(), s.totalIssues(),
-                s.highIssues(), s.mediumIssues(), s.lowIssues(), s.exemptedIssues()));
+                s.highIssues(), s.mediumIssues(), s.lowIssues(), s.exemptedIssues(), s.autoExcludedIssues()));
+        stats.setToolTipText(MapperCheckerBundle.message("report.stats.autoexcluded.tooltip"));
         rebuildTree();
     }
 
     private void rebuildTree() {
         DefaultMutableTreeNode root = new DefaultMutableTreeNode();
+        DefaultMutableTreeNode insufficientNode = null;
         if (outcome != null) {
-            List<ReportedIssue> visible = filtered(outcome.reported());
+            // 上游赋值分析追不出结论的单独一组：既不是"确认有问题"，也不是"确认没赋值"
+            // （后者已经自动排除了），混在一起会让确定的问题淹没在存疑项里
+            List<ReportedIssue> solid = new ArrayList<>();
+            List<ReportedIssue> insufficient = new ArrayList<>();
+            for (ReportedIssue ri : filtered(outcome.reported())) {
+                (ri.issue().isEvidenceInsufficient() ? insufficient : solid).add(ri);
+            }
             DefaultMutableTreeNode issuesNode = new DefaultMutableTreeNode(
-                    MapperCheckerBundle.message("report.node.issues", visible.size()));
-            Map<String, Map<String, List<ReportedIssue>>> grouped = new LinkedHashMap<>();
-            for (ReportedIssue ri : visible) {
-                String module = moduleOf(ri);
-                String file = ri.issue().primaryLocation().fileName();
-                grouped.computeIfAbsent(module, k -> new LinkedHashMap<>())
-                        .computeIfAbsent(file, k -> new ArrayList<>()).add(ri);
-            }
-            for (var m : grouped.entrySet()) {
-                DefaultMutableTreeNode moduleNode = new DefaultMutableTreeNode(
-                        MapperCheckerBundle.message("report.node.module", m.getKey().isEmpty() ? "-" : m.getKey()));
-                for (var f : m.getValue().entrySet()) {
-                    DefaultMutableTreeNode fileNode = new DefaultMutableTreeNode(f.getKey());
-                    for (ReportedIssue ri : f.getValue()) {
-                        fileNode.add(new DefaultMutableTreeNode(ri));
-                    }
-                    moduleNode.add(fileNode);
-                }
-                issuesNode.add(moduleNode);
-            }
+                    MapperCheckerBundle.message("report.node.issues", solid.size()));
+            fillByModuleAndFile(issuesNode, solid);
             root.add(issuesNode);
+
+            if (!insufficient.isEmpty()) {
+                insufficientNode = new DefaultMutableTreeNode(new GroupNote(
+                        MapperCheckerBundle.message("report.node.insufficient", insufficient.size()),
+                        MapperCheckerBundle.message("report.node.insufficient.tooltip")));
+                fillByModuleAndFile(insufficientNode, insufficient);
+                root.add(insufficientNode);
+            }
 
             List<UnresolvedInvocation> unresolved = outcome.result().unresolved();
             DefaultMutableTreeNode unresolvedNode = new DefaultMutableTreeNode(
@@ -218,7 +221,43 @@ public final class CheckReportPanel extends JPanel {
         }
         tree.setModel(new DefaultTreeModel(root));
         TreeUtil.expand(tree, 3);
+        if (insufficientNode != null) {
+            // 默认折叠：确定的问题先入眼，存疑的等有空再翻
+            tree.collapsePath(new TreePath(new Object[]{root, insufficientNode}));
+        }
         details.setText("");
+    }
+
+    /** 一组问题按 Module → 文件挂到 parent 下。两个分组用同一套层级，翻起来没有割裂感。 */
+    private void fillByModuleAndFile(DefaultMutableTreeNode parent, List<ReportedIssue> issues) {
+        Map<String, Map<String, List<ReportedIssue>>> grouped = new LinkedHashMap<>();
+        for (ReportedIssue ri : issues) {
+            grouped.computeIfAbsent(moduleOf(ri), k -> new LinkedHashMap<>())
+                    .computeIfAbsent(ri.issue().primaryLocation().fileName(), k -> new ArrayList<>()).add(ri);
+        }
+        for (var m : grouped.entrySet()) {
+            DefaultMutableTreeNode moduleNode = new DefaultMutableTreeNode(
+                    MapperCheckerBundle.message("report.node.module", m.getKey().isEmpty() ? "-" : m.getKey()));
+            for (var f : m.getValue().entrySet()) {
+                DefaultMutableTreeNode fileNode = new DefaultMutableTreeNode(f.getKey());
+                for (ReportedIssue ri : f.getValue()) {
+                    fileNode.add(new DefaultMutableTreeNode(ri));
+                }
+                moduleNode.add(fileNode);
+            }
+            parent.add(moduleNode);
+        }
+    }
+
+    /**
+     * 带一段说明的分组节点：树上显示 {@code label}，选中时把 {@code note} 显示在详情区。
+     * "证据不足"这一组不解释清楚就会被当成"插件没查出来的垃圾项"，说明必须找得到地方看。
+     */
+    private record GroupNote(String label, String note) {
+        @Override
+        public String toString() {
+            return label;
+        }
     }
 
     private List<ReportedIssue> filtered(List<ReportedIssue> all) {
@@ -245,12 +284,17 @@ public final class CheckReportPanel extends JPanel {
     // ---------------------------------------------------------------- 选中与详情
 
     private @Nullable ReportedIssue selectedIssue() {
+        return selectedUserObject(ReportedIssue.class);
+    }
+
+    /** 选中节点的 userObject，类型不符返回 null。 */
+    private <T> @Nullable T selectedUserObject(Class<T> type) {
         TreePath p = tree.getSelectionPath();
         if (p == null) {
             return null;
         }
         Object o = ((DefaultMutableTreeNode) p.getLastPathComponent()).getUserObject();
-        return o instanceof ReportedIssue ri ? ri : null;
+        return type.isInstance(o) ? type.cast(o) : null;
     }
 
     private @Nullable ReportedExemption selectedExemption() {

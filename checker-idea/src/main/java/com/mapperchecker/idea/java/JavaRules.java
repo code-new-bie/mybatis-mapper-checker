@@ -67,6 +67,14 @@ public final class JavaRules {
 
     private static final Set<String> COPY_METHOD_NAMES = Set.of("copyProperties", "copy", "copyBean", "populate");
 
+    /**
+     * 是不是"反射拷贝"那一类方法名。上游赋值分析沿调用链追到"对象被整个传给了别的方法"时，
+     * 用它区分"可能就是在这儿被填充的"和"不知道传去干嘛了"，好在备注里说清楚原因。
+     */
+    public static boolean isCopyMethodName(@Nullable String name) {
+        return name != null && COPY_METHOD_NAMES.contains(name);
+    }
+
     private final Project project;
     private final CheckSettings settings;
     private final RuleOptions rules;

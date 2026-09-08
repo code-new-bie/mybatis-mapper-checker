@@ -13,6 +13,8 @@ public final class Statistics {
     private int suppressedIssues;
     private int exemptedIssues;
     private int invalidExemptions;
+    /** 上游赋值分析确认"从未真正赋值 + SQL 未使用"、判定为无害而不计入问题的条数。 */
+    private int autoExcludedIssues;
     private int highIssues;
     private int mediumIssues;
     private int lowIssues;
@@ -25,6 +27,7 @@ public final class Statistics {
     public void incSuppressedIssues() { suppressedIssues++; }
     public void incExemptedIssues() { exemptedIssues++; }
     public void incInvalidExemptions() { invalidExemptions++; }
+    public void incAutoExcludedIssues() { autoExcludedIssues++; }
 
     public void countIssue(ContractIssue issue) {
         switch (issue.confidence()) {
@@ -42,6 +45,7 @@ public final class Statistics {
     public int suppressedIssues() { return suppressedIssues; }
     public int exemptedIssues() { return exemptedIssues; }
     public int invalidExemptions() { return invalidExemptions; }
+    public int autoExcludedIssues() { return autoExcludedIssues; }
     public int highIssues() { return highIssues; }
     public int mediumIssues() { return mediumIssues; }
     public int lowIssues() { return lowIssues; }

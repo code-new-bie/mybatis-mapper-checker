@@ -150,11 +150,21 @@ public final class CheckRunContext {
             issues.add(r);
         }
         if (settings.upstreamAssignmentAnalysis()) {
-            // 置信度可能变，必须在排序之前调整完
+            // 置信度可能变、也可能被判定为无害排除掉，必须在排序之前处理完
             UpstreamAssignmentAnalyzer analyzer = new UpstreamAssignmentAnalyzer(
                     callSiteScope == null ? com.intellij.psi.search.GlobalSearchScope.projectScope(project) : callSiteScope,
-                    setterUsages);
-            issues.replaceAll(analyzer::adjust);
+                    setterUsages, reflectiveCopyTargets);
+            List<ReportedIssue> kept = new ArrayList<>(issues.size());
+            for (ReportedIssue ri : issues) {
+                ReportedIssue adjusted = analyzer.adjust(ri);
+                if (adjusted == null) {
+                    statistics.incAutoExcludedIssues();
+                } else {
+                    kept.add(adjusted);
+                }
+            }
+            issues.clear();
+            issues.addAll(kept);
         }
         issues.sort((a, b) -> {
             int c = a.issue().ruleId().compareTo(b.issue().ruleId());

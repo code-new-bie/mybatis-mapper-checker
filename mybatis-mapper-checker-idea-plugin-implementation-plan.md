@@ -306,7 +306,10 @@ PageHelper、MyBatis-Plus、手写分页都会把 pageNum / pageSize / offset / 
 
 ### 6.1B 上游赋值分析（真机反馈 2026-09-07 加入）
 
-真机场景：`query.dataStatuses` 声明了却没在 SQL 里用，报告只说"未使用"，看不出这值是上游真传了、还是压根没人给过——前者更像 bug（值被静默丢弃），后者更像历史遗留（死参数，删了就是）。`UpstreamAssignmentAnalyzer` 在 `CheckRunContext.finish()` 里对已经报出来的 DAL-001（声明的参数、实体属性）与 DAL-010 做一次调整，只影响置信度与备注，不影响是否报告。设置项 `upstreamAssignmentAnalysis` 默认开。
+真机场景：`query.dataStatuses` 声明了却没在 SQL 里用，报告只说"未使用"，看不出这值是上游真传了、还是压根没人给过——前者更像 bug（值被静默丢弃），后者更像历史遗留（死参数，删了就是）。`UpstreamAssignmentAnalyzer` 在 `CheckRunContext.finish()` 里对已经报出来的 DAL-001（声明的参数、实体属性）与 DAL-010 做一次调整，设置项 `upstreamAssignmentAnalysis` 默认开。
+
+- DAL-010：ASSIGNED 置信度上调，NOT_ASSIGNED 置信度下调，不影响是否报告（这条是跨 statement 聚合，判断本来就粗，不敢直接排除）。
+- DAL-001：ASSIGNED 置信度上调（同上）；**NOT_ASSIGNED 直接不算问题**（2026-09-08 真机反馈后改的，见下）；UNKNOWN 置信度不变，但实体属性那一支会被标记进报告的"证据不足"分组（见本节最后一小节）。
 
 判定很朴素，只把字面量 `null` 当"没给值"，其余（变量、方法调用、new 出来的对象……）一律当"给了值"：
 
@@ -316,20 +319,90 @@ PageHelper、MyBatis-Plus、手写分页都会把 pageNum / pageSize / offset / 
 参数类型不是可展开的 Bean（标量 / 集合 / 数组，PARAM_ANNOTATION / METHOD_PARAM）
   → 找该 Mapper 方法的调用点（与单 Map 参数调用点追踪同一个 callSiteScope），看对应位置的实参
   → 找到一处非 null 实参就够了，早停：ASSIGNED，confidence.raise()
-  → 全部调用点都传字面量 null：NOT_ASSIGNED，confidence.lower()
-  → 一个调用点都没找到（反射调用 / 尚未接入）：UNKNOWN，不下结论，原样返回
+  → 全部调用点都传字面量 null 且调用点没被上限截断：NOT_ASSIGNED
+  → 一个调用点都没找到（反射调用 / 尚未接入）：NOT_ANALYZED，原样返回
+    （注意不是 UNKNOWN：这条问题的成立不依赖调用链证据，不该进"证据不足"分组，详见最后一小节）
 
 参数类型是可展开的 Bean（实体属性 BEAN_PROPERTY，与 DAL-010）
   → owner 直接取参数的类型（不再从锚点向上找外层 PsiClass——锚点在 DAO 方法里，向上找到的是
-    Mapper 接口，不是实体类），复用扫描阶段登记的 setterUsages 表
-    （"实体全限定名#属性" → SetterEvidence：位置 + 是否见过非 null 值）
-  → 命中且 anyRealValue：ASSIGNED；命中但全是 null：NOT_ASSIGNED；没命中：UNKNOWN
+    Mapper 接口，不是实体类）
+  → 首选：沿调用链往上追到实体的构造点，看这个属性有没有被 setX 过（见最后一小节）
+  → 追不出结论时才退回扫描阶段登记的项目级 setterUsages 表
+    （"实体全限定名#属性" → SetterEvidence：位置 + 是否见过非 null 值），且**只采信它的 ASSIGNED**：
+    这张表不区分调用链，拿它说"从来没赋过"不可信，会误伤共用同一 Query 类的其他方法
+  → 两条都没有证据：UNKNOWN（进"证据不足"分组）；沿途或别处见过反射拷贝就把这层可能性写进备注
   → 已知限制：若 Mapper 方法参数声明为父类类型（如 BaseQuery），而调用点实际构造并操作的是子类
     （OrderQuery），两者 FQN 不一致，setterUsages 查不到——退化为 UNKNOWN，不影响正确性，只是少一条备注。
     Mapper 参数与调用点用同一个具体类型（绝大多数场景）不受影响
 ```
 
-`Confidence.raise()` / `.lower()`：HIGH 不再升、LOW 不再降，中间各挪一级，静态分析不装作能看穿数据流，不越级到 HIGH。
+`Confidence.raise()`：HIGH 不再升，中间挪一级，静态分析不装作能看穿数据流，不越级到 HIGH。
+
+#### NOT_ASSIGNED 直接排除（真机反馈 2026-09-08 加入）
+
+用户提的场景：一个 Query 类被多个 DAO 方法共用，其中某个方法的 SQL 不用属性 X，且这个方法全程的调用都没给 X 赋过值——这不是 bug，是完全自洽的正常状态（DAL-001 的核心担忧是"有值却没用上"，既然确认过从来没给过真值，SQL 不用它就谈得通）。原来只是把置信度降到更低，这次改成 `adjust()` 对 NOT_ASSIGNED 直接返回 `null`，`CheckRunContext.finish()` 把这条issue 从问题列表里摘掉，改记 `Statistics.autoExcludedIssues`（不静默到让人看不出发生过什么——统计条"已排除：N"，鼠标悬停有说明，Markdown 导出也有一行）。UNKNOWN 不受影响，仍然照常报告，因为"没找到证据"不等于"确认没赋值"（可能是 Builder / 反射拷贝 / 扫描范围之外）。
+
+#### 按调用点精确追踪（真机反馈 2026-09-08 当天追加）
+
+上面那版排除逻辑还留了一个坑：`setterUsages` 是项目级的证据表，按"实体全限定名#属性"记录，不区分是哪个方法的调用链在赋值。如果同一个 Query 类被 methodA、methodB 共用，methodA 的调用方从不碰属性 X（且 methodA 的 SQL 也不用 X，本该完全无害），但 methodB 的调用方确实给 X 赋了真值（哪怕是给 methodB 用的、完全合理）——methodA 那条 DAL-001 反而会被误判成 ASSIGNED、置信度被抬高，比不做这个分析还吵。用户确认这个场景值得投入去修，方案是：
+
+```text
+analyzePropertyPerCallSite(param, prop)
+  → 找该 DAO 方法自己的调用点（MethodReferencesSearch，按方法缓存，多个属性共用同一份调用点列表）
+  → 对每个调用点，traceLocalBeanConstruction(argument, callSite, prop)：
+      只认得"局部变量 = new Bean()，调用前顺序 setX(...)"这一种最常见写法
+      （和 JavaRules.isFreshEmptyObject 同一类判定，但这里要具体看某一个属性）
+      结构认得出来就必有定论：扫到一次真赋值 → ASSIGNED；扫完没有 → NOT_ASSIGNED
+      （new 出来的对象没人碰过这个属性，或者只碰过 null，结论一样）
+      变量中途被重新赋值、或整个传给了别的方法：假设不成立，返回 UNKNOWN，不猜
+  → 汇总：任一调用点 ASSIGNED 就是 ASSIGNED（早停）；至少一个调用点确认 NOT_ASSIGNED
+    且没有 ASSIGNED，就是 NOT_ASSIGNED；一个调用点都追不出来，才是 UNKNOWN
+  → 只有 UNKNOWN 时才退回项目级 setterUsages 表（旧逻辑当兜底，不当首选）
+```
+
+没有另起一条新的 DAL-001 检查路径，也没有改 `JavaParameterResolver`（那是核心、被 26 个测试覆盖的共享组件，改它风险不小）——这是一个独立、自包含的轻量追踪器，只服务于"这个属性在这个调用点有没有被真正赋值"这一个窄问题，追不出来老老实实退回旧逻辑，不装作比实际能力强。
+
+已知残余限制：对象经跨方法构造 / Builder 链返回时追不出来（会退回项目级证据表，行为与本次改动之前一致，不是新引入的问题）。`UpstreamAssignmentAnalyzerEndToEndTest.test共享Query_按调用点精确追踪_*` 两个测试锁住了修复后的行为。
+
+**过程教训**：写第一版诊断测试时把方法名写成了 `diag_xxx`（不是 `test` 开头），这批测试用的 `LightJavaCodeInsightFixtureTestCase`（JUnit3 风格）只识别 `test` 开头的方法——那个测试从头到尾没有被真正执行过，"通过"只是因为压根没跑。全项目排查过一遍，确认只有这一处，已改名并验证真的在跑。
+
+#### 查不到证据时补一句"可能是反射拷贝"（真机反馈 2026-09-08 当天再追加）
+
+用户追问：属性级 DAL-001 默认备注"该实体可能被多个 statement 共用，请人工确认"太笼统——赋值除了直接 `setX(...)`，也可能是 `BeanUtils.copyProperties` 之类反射拷贝来的，report 里看不出是哪种。两条追踪（按调用点、项目级证据表）都查不到证据时，`analyzeProperty` 顺手查一下 `reflectiveCopyTargets`（`JavaRules.recordCopyTargets` 已经在扫描时记好的、DAL-010/011 也在用的同一份记录）——命中就返回 `Evidence.unknownReflective()`，`adjust()` 据此把备注换成"没找到直接的 setter / 赋值调用，但该实体曾被用作 copyProperties 之类反射拷贝的目标，这个属性也可能是这么被赋值的"，**置信度不变**（还是不敢断言，只是把"为什么看不出来"说清楚）。`UpstreamAssignmentAnalyzerEndToEndTest.test反射拷贝目标查不到直接赋值证据时给出更具体的提示` 锁住这个行为。
+
+#### 沿调用链往上追 + 追不出的单独分组（真机反馈 2026-09-08 当天第三次追加）
+
+用户把这条思路推到底："如果整个业务调用的过程中没有赋值，理论上这条异常就不该报？"——思路对，而且 NOT_ASSIGNED 那一档就是这么做的。问题出在射程：上面那版只看 DAO 方法的**直接**调用点，且只认"局部变量 `new Bean()` + 顺序 setX"。Spring 分层里 Query 几乎都是在 Service / Controller 层构造、当参数一层层传下来，DAO 的直接调用者拿到的就是它自己的形参，`traceLocalBeanConstruction` 一照面就判 UNKNOWN——**最典型的代码恰恰追不动**，报告里于是留下一大片笼统的"该实体可能被多个 statement 共用，请人工确认"。
+
+```text
+traceUpFromParameter(owner, index, prop, depth, visiting)      # owner 的第 index 个形参就是那个实体
+  → callSites(owner)：找 owner 的所有调用点
+      连同 CallChainFinder.searchTargets(owner)（method + findSuperMethods 闭包）一起搜——
+      Spring 里真正的调用点大多经接口引用，只搜实现类方法会全漏掉（调用链上线时真机踩过，14.6）
+      多搜出来的调用点（接口多实现时别的实现的调用方）只会让结论更保守，不会更激进
+  → 每个调用点 traceArgument(实参)：
+      局部变量 = new Bean()  → 就地扫 setX(...)（原逻辑，见上一节）
+      调用方自己的形参       → 递归往上一层，depth + 1
+      字段 / 方法返回值 / 内联 new → UNKNOWN，不猜也不当反例
+  → 汇总（NOT_ASSIGNED 判得比 ASSIGNED 严，见下）：
+      任一调用点 ASSIGNED                          → ASSIGNED（早停）
+      每个调用点都追出确定结论且都没赋真值          → NOT_ASSIGNED
+      有一个没看懂 / 调用点被上限截断 / 压根没有调用点 → UNKNOWN
+```
+
+**为什么 NOT_ASSIGNED 判得比 ASSIGNED 严**：判错成 ASSIGNED 只是多报一条，人看得见、能自己否掉；判错成 NOT_ASSIGNED 是**静默排除**，真问题就此消失。所以早先"至少一个调用点确认没赋值就算 NOT_ASSIGNED"这条收紧成了"每个调用点都得有确定结论"。同理，调用点触到 `MAX_CALL_SITES_PER_METHOD` 上限（没看全）时不再默默继续，直接降级 UNKNOWN。
+
+上限：`MAX_CHAIN_DEPTH = 4`（Controller → Service → DalService → DAO 差不多就这个量级）、`MAX_CALL_SITES_PER_METHOD = 50`、`MAX_SEARCHED_METHODS = 400`（一次运行内做引用搜索的不同方法数上限，命中缓存不计数）。往上追天然会重新引入"大量全项目引用搜索"的开销——那正是 commit `58be0bf` 专门优化掉过的问题，所以必须有硬上限，超了就老实返回 UNKNOWN，不硬追。
+
+`traceLocalBean` 里"变量被整个传给别的方法"这一支顺带细化了：如果那个方法名是 `copyProperties` / `copy` / `copyBean` / `populate`（`JavaRules.isCopyMethodName`，与 DAL-004/020 同一份名单），返回 `unknownReflective()`，备注就能说清楚"值可能是在这儿被反射拷贝填进去的"，而不是笼统的"追不出来"。
+
+**追不出结论的单独分组**（用户在三个选项里选的这一个）：`ContractIssue` 增加第 12 个分量 `upstream`（`UpstreamStatus`，规则生成时一律 `NOT_ANALYZED`，11 参构造保持向后兼容），`isEvidenceInsufficient()` 即 `upstream == UNKNOWN`。报告树在"问题"之后多一组"证据不足，待人工确认（N）"，**默认折叠**，选中该分组节点时详情区给出解释；Markdown 导出多一节同名章节 + 统计行"其中证据不足待人工确认：N"，CSV 的状态列写"证据不足"。
+
+这里有个必须分清的边界（第一版做错了、被 `ExemptionAndRealtimeTest` 逮住）：**只有实体属性那一支追不出结论才算"证据不足"**。声明参数（`@Param` 标量 / 集合）的 DAL-001 是代码自身就能证实的契约不符——方法签名声明了它、对应 SQL 没用它，成立与否根本不依赖调用链证据，上游分析只是额外决定要不要升置信度 / 判成死参数排除；把"查不到调用点"的声明参数丢进待确认组是误伤。所以 `analyzeDeclaredParam` 追不出来时返回 `NOT_ANALYZED` 而不是 `UNKNOWN`，`UpstreamStatus` 也因此从三态扩成四态。
+
+新增测试：`test分层调用链_实体在上两层构造且全程没赋值_判定无害不计入问题`、`test分层调用链_实体在上两层构造且赋了真值_置信度上调`、`test分层调用链_中间层经接口调用也能追到构造点`、`test实体属性_对象由Builder返回追不出构造点_标记为证据不足单独分组`、`test声明参数找不到调用点不算证据不足`。
+
+残余限制（诚实记录）：对象经 Builder 链 / 跨方法构造返回时仍然追不出构造点，落进"证据不足"组；调用链超过 4 层、或调用点在扫描范围之外的同样如此。这些不再伪装成"没问题"，也不再混在确定的问题里。
 
 ### 6.2 DAL-005 对 Mapper 接口的含义
 
@@ -1050,6 +1123,23 @@ render(root)                渲染成缩进树文本（读法与 IDE 自带 Call
 **真机反馈（2026-09-08）修的一个漏报**：`TicketIndexDalServiceImpl.refundTicketIndexSafe()` 明明被调用，链条却在这里断了、判成入口点。根因是典型 Spring 分层——`XxxServiceImpl` 实现 `XxxService` 接口，真正的调用点是 `@Autowired XxxService svc; svc.method();`，这种调用点的 `resolve()` 落在**接口方法声明**上，不落在 Impl 的覆写方法本身；只搜 Impl 方法（哪怕 `MethodReferencesSearch` 的 `strictSignatureSearch` 参数传 `false`，实测也不行——那个参数管的是别的事，不是"顺带搜父类 / 接口方法"）会把这类调用点全部漏掉。改法是 `searchTargets(method)`：BFS 展开 `method.findSuperMethods()`，把该方法直接或间接覆写的**每一层**方法（接口方法、抽象父类方法……）都摸一遍 `MethodReferencesSearch`，结果按调用者方法去重合并。代价：如果一个接口有多个实现类，通过接口方法搜到的调用点未必都调的是这一个实现——`render()` 会在这类节点（自己列了调用者、又覆写了别的方法）后面加一句"（覆写方法，以下调用点可能经接口调用，若有多个实现类未必都调这一个）"，不装作能分清楚具体调的是哪个实现。两害相权：宁可多列几个疑似调用点，也不能把真实调用点判定为"没人调用"。
 
 `CallChainFinderHeavyTest`：跨 Module + 经接口调用同时验证（`module-service` 的 `SvcImpl implements Svc`，`module-web` 依赖 `service`、经 `Svc` 类型字段调用），确认 `GlobalSearchScope.projectScope` 本身没有跨模块问题，问题完全出在接口分派这一层。
+
+`searchTargets` 后来被 `UpstreamAssignmentAnalyzer` 沿调用链往上追时复用（改成包内可见）——同一个接口分派的坑不能踩两次。
+
+### 14.7 "证据不足，待人工确认"分组（真机反馈 2026-09-08 加入）
+
+上游赋值分析沿调用链追过、但没能确定实体属性到底有没有被赋过值的那批 DAL-001，单独一组展示，不跟已确认的问题混在一起（用户在"照报 / 一并排除 / 单独分组"三个选项里选的这个）。判据是 `ContractIssue.isEvidenceInsufficient()`（即 `upstream == UpstreamStatus.UNKNOWN`，只有实体属性那一支会取到，理由见 6.1B 最后一小节）。
+
+```text
+报告树   问题（N）                    ← 已确认，或不依赖上游证据的（声明参数）
+        证据不足，待人工确认（M）      ← 默认折叠；选中该节点，详情区给出为什么追不出来
+        无法解析（K）
+        已豁免（J）
+Markdown 多一节"## 证据不足，待人工确认" + 统计行"其中证据不足待人工确认：M"
+CSV      状态列写"证据不足"（原来一律是"问题"）
+```
+
+两组内部都按 Module → 文件分层（`fillByModuleAndFile`），翻起来没有割裂感。这一组为空时整个节点不出现，避免关掉上游分析后留一个恒为 0 的空壳。
 
 ---
 

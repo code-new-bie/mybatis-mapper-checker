@@ -168,9 +168,42 @@
 - [x] 代价：接口有多个实现类时，通过接口方法搜到的调用点未必都调的是这一个实现——`render()` 在这类节点后面加提示"（覆写方法，以下调用点可能经接口调用，若有多个实现类未必都调这一个）"，不装作能分清具体调的是哪个实现
 - [x] `CallChainFinderHeavyTest`：跨 Module + 经接口调用同时验证，确认 `GlobalSearchScope.projectScope` 本身没有跨模块问题（用户曾怀疑"调用方可能跨模块了"），问题完全出在接口分派这一层
 
+## DAL-001 的 NOT_ASSIGNED 从"降级"改成"排除"（2026-09-08，用户提出：Query 被多方法共用，某方法全程没赋值 + SQL 没用该属性，应该算正常）
+- [x] `Statistics.autoExcludedIssues`（+ 统计条"已排除：N"、鼠标悬停说明、Markdown 导出行）
+- [x] `UpstreamAssignmentAnalyzer.adjust()` 改成 `@Nullable` 返回：NOT_ASSIGNED → `null`（不算问题，只计数）；ASSIGNED 不变（置信度上调）；UNKNOWN 不变（原样报告，"没证据"不等于"确认没赋值"）
+- [x] `CheckRunContext.finish()`：从 `replaceAll` 改成显式过滤循环，处理 `null` 并计数
+- [x] DAL-010（`QueryClassRules`）不受影响：仍然是"降级不排除"，因为那条是跨 statement 聚合、判断本来就粗
+- [x] 更新 `UpstreamAssignmentAnalyzerEndToEndTest` 的两个 NOT_ASSIGNED 用例，断言"问题消失 + autoExcludedIssues 计数"而不是"置信度降级"
+- [x] **发现一个更深的限制并当场修复**：`setterUsages` 是项目级证据表，不区分调用链——若同一个 Query 被多方法共用，methodA 从不碰某属性（该方法本该完全无害），但 methodB 的调用方确实赋了值，methodA 那条会被误判成 ASSIGNED、置信度反而被抬高，比不分析还吵。用户确认要做精确版，已实现（见下）
+
+## 按调用点精确追踪 Bean 参数赋值（2026-09-08，同一天追加：用户确认要修上面发现的更深限制）
+- [x] `UpstreamAssignmentAnalyzer.analyzePropertyPerCallSite`：找该 DAO 方法自己的调用点（按方法缓存），对每个调用点用 `traceLocalBeanConstruction` 精确判断
+- [x] `traceLocalBeanConstruction`：只认"局部变量 = new Bean() + 顺序 setX(...)"这种最常见写法（与 `JavaRules.isFreshEmptyObject` 同类判定）；结构认得出来必有定论（ASSIGNED 或 NOT_ASSIGNED），变量被重新赋值 / 传给别的方法时退化为 UNKNOWN，不猜
+- [x] 独立、自包含的轻量追踪器，没有改 `JavaParameterResolver`（核心共享组件，26 个既有测试覆盖，风险不小）也没有另开一条新的 DAL-001 检查路径，追不出来才退回项目级证据表当兜底
+- [x] `test共享Query_按调用点精确追踪_另一方法的赋值不再误伤本方法` / `test共享Query_按调用点精确追踪_真正用到的方法不受影响` 两个测试锁住修复后行为
+- [x] **过程教训**：第一版诊断测试方法名写成 `diag_xxx`，JUnit3 风格的 `LightJavaCodeInsightFixtureTestCase` 只认 `test` 开头的方法，那个测试从未被真正执行过、"通过"只是没跑；已改名并验证；全项目 grep 排查过，确认只有这一处
+
+## 查不到证据时补一句"可能是反射拷贝"（2026-09-08 同一天再追加，用户追问：默认备注太笼统，赋值也可能是反射拷贝来的）
+- [x] `analyzeProperty` 两条追踪（按调用点、项目级证据表）都查不到证据时，顺手查一下 `reflectiveCopyTargets`（与 DAL-010/011 共用同一份、扫描时已经记好的记录）
+- [x] `Evidence` 加 `reflectiveCopyHint` 标记；`adjust()` 命中时把备注换成更具体的"可能是反射拷贝来的"文案，**置信度不变**（仍不下结论，只是把"为什么看不出来"说清楚）
+- [x] `test反射拷贝目标查不到直接赋值证据时给出更具体的提示` 锁住行为
+
+## 沿调用链往上追 + 追不出的单独分组（2026-09-08 同一天第三次追加，用户把思路推到底："整个业务调用过程中没有赋值，理论上就不该报"）
+- [x] 确认思路成立、也已是现有设计（NOT_ASSIGNED 直接排除），并说清真正的问题不在判定逻辑而在**射程**：早先只看 DAO 的直接调用点，直接调用者传的是自己的形参就立刻 UNKNOWN，Spring 分层里最典型的代码恰恰追不动
+- [x] `traceUpFromParameter` / `traceArgument`：实参解析到"当前方法自己的形参"时，顺着参数位置继续往上一层调用者追（`MAX_CHAIN_DEPTH = 4`）
+- [x] 搜调用点连同 `CallChainFinder.searchTargets`（`findSuperMethods` 闭包）一起搜，接口分派的调用点不再漏；`searchTargets` 改成包内可见复用，同一个坑不踩两次
+- [x] **收严 NOT_ASSIGNED**：从"至少一个调用点确认没赋值"改成"每个调用点都得追出确定结论且都没赋真值"；调用点触到上限（没看全）也降级 UNKNOWN。理由：判错成 ASSIGNED 只是多报一条，判错成 NOT_ASSIGNED 是静默排除，真问题就此消失
+- [x] 项目级 `setterUsages` 表降级为**只采信 ASSIGNED**：它不区分调用链，拿它说"从来没赋过"会误伤共用同一 Query 类的其他方法
+- [x] 性能上限：`MAX_CALL_SITES_PER_METHOD = 50`、`MAX_SEARCHED_METHODS = 400`（一次运行内做引用搜索的不同方法数，命中缓存不计数），超了老实返回 UNKNOWN——往上追天然会重新引入 commit `58be0bf` 优化掉的"大量全项目引用搜索"开销
+- [x] `traceLocalBean` 里"变量被整个传给别的方法"细化：方法名命中 `JavaRules.isCopyMethodName` 时给出"可能是在这儿被反射拷贝填进去的"提示
+- [x] `ContractIssue` 增加第 12 个分量 `upstream`（11 参构造保持向后兼容，规则生成时一律 `NOT_ANALYZED`）+ `isEvidenceInsufficient()`；`UpstreamStatus` 从三态扩成四态
+- [x] 报告树新增"证据不足，待人工确认（N）"分组，**默认折叠**，选中该节点详情区给出解释；Markdown 新增同名章节 + 统计行；CSV 状态列写"证据不足"
+- [x] **第一版做错并被既有测试逮住**：把"查不到调用点的声明参数"也归进了证据不足组（`ExemptionAndRealtimeTest` 的 CSV 断言挂了）。声明参数的 DAL-001 是代码自身就能证实的契约不符，成立与否不依赖调用链证据，只有实体属性那一支才该进这个组——`analyzeDeclaredParam` 追不出来时改返回 `NOT_ANALYZED`
+- [x] 新增 5 个测试：分层链无赋值→排除、分层链有赋值→升置信度、中间层经接口调用也能追到、Builder 返回→标记证据不足（并断言 Markdown 有该章节）、声明参数查不到调用点→不算证据不足
+
 ## 测试总数
 - checker-core：83
-- checker-idea：138（含 Heavy 5、端到端 50+）
+- checker-idea：146（含 Heavy 5、端到端 50+）
 
 ## 已知限制 / 待真机验证
 - 报告窗口、设置页、右键菜单等 Swing UI 未做自动化测试，需 `gradlew :checker-idea:runIde` 人工核对。责任人开关与右键查看提交信息需要在真实 Git 仓库里手动验证。
@@ -179,7 +212,9 @@
 - 豁免文件只支持"列表 + 平铺键值"形态的 YAML，锚点、多行字符串不支持。
 - 为了扫描速度（方案 17.1）：只用 insert / update / delete 且不提 receiver 类型名、也没有任何 selectXxx / queryForXxx 的 DAO 文件不会被发现；关掉 DAL-011 时，set 发生在扫描范围外的属性不再报 DAL-010。
 - 上游赋值分析只把字面量 null 当"没给值"，看不穿变量运行时是否恰好是 null；若 Mapper 方法参数声明为父类类型而调用点操作的是子类实例，两者 FQN 不一致，setterUsages 查不到会退化为 UNKNOWN（不影响正确性，只是少一条备注；Mapper 参数与调用点用同一具体类型的绝大多数场景不受影响）。
+- 实体属性的赋值追踪会沿调用链往上走（深度上限 4 层，连带搜覆写链上的接口 / 父类方法），但构造点本身仍只认"局部变量 new Bean() + 顺序 setX(...)"这一种写法：对象经 Builder 链 / 跨方法构造返回、调用链超过 4 层、调用点在扫描范围之外时追不出来，落进"证据不足，待人工确认"分组（不再伪装成没问题，也不再混在确定的问题里）。
 - 责任人依赖已安装且已配置好的 VCS 插件（如 Git4Idea）；没有 VCS 支持或文件未提交时静默不显示，不报错。
 - 调用链只做"一个方法反向找调用者"，不做"参数值怎么变化"的数据流分析（那是 8.3 跨方法追踪的事）；深度 / 分支 / 总节点数都有上限，超大扇入（如很多地方都调用的公共方法）会在渲染里看到"还有更多调用者未展开"，不是漏了，是主动截断。
 - 调用链搜索会连带摸覆写链上的接口 / 父类方法：如果一个接口有多个实现类，某个 Impl 节点列出的调用点未必全都调的是这一个实现（也可能调的是同接口的另一个实现），`render()` 会在这类节点上提示，不保证精确到"这一个实现"。
+- 上游赋值分析的 `setterUsages` 项目级证据表现在只用来采信 ASSIGNED、且排在沿链追踪之后：只有当调用链完全追不出结论、而该实体的这个属性在项目里别处被赋过真值时，才可能出现"另一个方法的赋值抬高了本方法置信度"的旧现象（结果是多报一条低置信度问题，不会静默排除，方向上是安全的）。
 - 短 id（`selectList("query")`）依赖 getAllKeys 快照，key 很多的超大项目首次查询稍慢。

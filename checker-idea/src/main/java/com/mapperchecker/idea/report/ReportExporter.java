@@ -40,26 +40,27 @@ public final class ReportExporter {
         if (s.invalidExemptions() > 0) {
             sb.append("，另有 ").append(s.invalidExemptions()).append(" 条豁免记录缺 reason / by / at 未生效");
         }
-        sb.append("\n\n");
+        sb.append('\n');
+        sb.append("- 已排除：").append(s.autoExcludedIssues())
+                .append("（上游赋值分析确认从未真正赋值，SQL 未使用完全说得通，判定无害）\n");
+
+        // 追了调用链但没能确定有没有赋值的，跟已确认的问题分开列，别混在一起看
+        List<ContractIssue> solid = new java.util.ArrayList<>();
+        List<ContractIssue> insufficient = new java.util.ArrayList<>();
+        for (ContractIssue i : result.issues()) {
+            (i.isEvidenceInsufficient() ? insufficient : solid).add(i);
+        }
+        sb.append("- 其中证据不足待人工确认：").append(insufficient.size()).append("\n\n");
 
         sb.append("## 问题概览\n\n");
-        if (result.issues().isEmpty()) {
+        if (solid.isEmpty()) {
             sb.append(MapperCheckerBundle.message("report.empty.no.issue")).append("\n\n");
         } else {
-            sb.append("| 规则 | 参数 / 属性 | statement | Java 位置 | 置信度 |\n|---|---|---|---|---|\n");
-            for (ContractIssue i : result.issues()) {
-                sb.append("| ").append(i.ruleId().code())
-                        .append(" | ").append(escape(i.parameterName()))
-                        .append(" | ").append(escape(i.statementId()))
-                        .append(" | ").append(escape(i.primaryLocation().display()))
-                        .append(" | ").append(confidence(i))
-                        .append(" |\n");
-            }
-            sb.append('\n');
+            sb.append(overviewTable(solid));
 
             sb.append("## 问题详情\n\n");
             Map<String, List<ContractIssue>> byStatement = new LinkedHashMap<>();
-            for (ContractIssue i : result.issues()) {
+            for (ContractIssue i : solid) {
                 byStatement.computeIfAbsent(i.statementId().isEmpty() ? "-" : i.statementId(), k -> new java.util.ArrayList<>()).add(i);
             }
             for (Map.Entry<String, List<ContractIssue>> e : byStatement.entrySet()) {
@@ -89,6 +90,16 @@ public final class ReportExporter {
                 }
                 sb.append('\n');
             }
+        }
+
+        sb.append("## 证据不足，待人工确认\n\n");
+        if (insufficient.isEmpty()) {
+            sb.append("无\n\n");
+        } else {
+            sb.append("上游赋值分析沿调用链追过，但没能确定这些参数 / 属性到底有没有被赋过值")
+                    .append("（对象经 Builder 或跨方法构造、值由反射拷贝填充、调用链超出深度上限、调用点在扫描范围之外）。")
+                    .append("既不等于\"确认没赋值\"（那种已自动排除），也不等于\"确认有问题\"。\n\n");
+            sb.append(overviewTable(insufficient));
         }
 
         sb.append("## 已豁免（已人工确认，不算问题）\n\n");
@@ -149,7 +160,7 @@ public final class ReportExporter {
                     .append(csv(e.exemption().reason())).append('\n');
         }
         for (ContractIssue i : result.issues()) {
-            sb.append("问题,").append(csv(i.ruleId().code())).append(',')
+            sb.append(i.isEvidenceInsufficient() ? "证据不足," : "问题,").append(csv(i.ruleId().code())).append(',')
                     .append(csv(i.parameterName())).append(',')
                     .append(csv(i.statementId())).append(',')
                     .append(csv(i.message())).append(',')
@@ -162,6 +173,20 @@ public final class ReportExporter {
                     .append(csv(String.join(" -> ", i.callPath()))).append(",,,\n");
         }
         return sb.toString();
+    }
+
+    /** 概览表：两个分组共用同一张表头，对照着看不用换脑子。 */
+    private static String overviewTable(List<ContractIssue> issues) {
+        StringBuilder sb = new StringBuilder("| 规则 | 参数 / 属性 | statement | Java 位置 | 置信度 |\n|---|---|---|---|---|\n");
+        for (ContractIssue i : issues) {
+            sb.append("| ").append(i.ruleId().code())
+                    .append(" | ").append(escape(i.parameterName()))
+                    .append(" | ").append(escape(i.statementId()))
+                    .append(" | ").append(escape(i.primaryLocation().display()))
+                    .append(" | ").append(confidence(i))
+                    .append(" |\n");
+        }
+        return sb.append('\n').toString();
     }
 
     static String confidence(ContractIssue i) {

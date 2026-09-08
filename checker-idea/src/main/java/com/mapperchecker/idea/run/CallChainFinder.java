@@ -179,8 +179,10 @@ public final class CallChainFinder {
     /**
      * method 本身 + 它直接或间接覆写的每一层方法（接口方法、父类方法……）——调用点可能经这条
      * 覆写链上任意一层的静态类型引用调用，只搜 method 自己会漏掉经接口 / 父类引用的真实调用点。
+     * <p>
+     * {@link UpstreamAssignmentAnalyzer} 沿调用链往上追时同样需要这份名单，同一个坑不能踩两次。
      */
-    private static List<PsiMethod> searchTargets(PsiMethod method) {
+    static List<PsiMethod> searchTargets(PsiMethod method) {
         List<PsiMethod> targets = new ArrayList<>();
         Set<PsiMethod> seen = new HashSet<>();
         java.util.Deque<PsiMethod> queue = new java.util.ArrayDeque<>();
