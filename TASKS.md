@@ -143,18 +143,36 @@
 - [x] 根因：`appendBlame`/`addFileOf`/`viewCommit` 直接用 `ri.javaElement().getContainingFile()` 拿文件——渲染发生在 Swing 布局线程，没有 read action，碰 PSI（哪怕只读）被 2024.2+ 线程模型拦下
 - [x] 统一改成从 `ContractIssue.primaryLocation()`（纯 `String`/`int`，扫描时已算好）取文件路径 + 行号，`VirtualFile` 用 `CheckRunContext.findFileForNavigation`（VFS 查找，非 PSI，EDT 安全）
 - [x] 规矩延续 `ReportedIssue.moduleName` 那次修复的原则：渲染 / 预热阶段只碰纯数据，不碰 PSI
-- [ ] 已知同类风险未动：`navigate()`/`navigateToJava()`/`navigateToMapper()` 双击导航时同样直接摸 `PsiElement.getContainingFile()`/`getTextRange()`，理论上有同样的崩溃可能，只是触发频率低（单次点击 vs 每次重绘）还没被真机踩到；等它真的出问题、或用户要求时再一并处理
+- [ ] ~~已知同类风险未动~~ → 下一条已修复
+
+## 双击 / 右键导航线程崩溃（2026-09-08，真机反馈：双击跳转报 read-action 断言异常，正是上一条标注的"已知同类风险"）
+- [x] `navigateToJava`/`navigateToMapper`：`ri.javaElement()`/`ri.mapperElement()` 解析智能指针本身就要 read access（内部会调 `isValid()`），双击 / 右键触发时在 EDT 上、没有 read action
+- [x] 统一改成 `navigateToPointer(SmartPsiElementPointer)`：resolve / isValid / getContainingFile / getTextRange 全部包进一个 `ReadAction.run`，只把结果（VirtualFile + 偏移，纯数据）带出来，真正的 `navigate` 在 read action 外执行
+- [x] "跳转到 Mapper"菜单项 `update()`（在 EDT 上被频繁调用）改成只判断 `mapperAnchor() != null`（原始指针引用，不 resolve），不在 update() 里碰 PSI
+- [x] `viewCallChain`：入口处的 `ri.javaElement()` 同样在 EDT 上裸调过一次（这次真机没报，但同一根因），挪进已有的 `ReadAction.run` 里一起解析
+- [x] `exempt()`：`ri.javaElement().getContainingFile()` 改用 `fileOf(ri)`（`primaryLocation` 纯数据，同责任人那次修复的写法），不摸 PSI
+- [ ] 这类"EDT 上没有 read action 就碰 PSI"的问题，测试环境本身默认授予隐式 read access（`ApplicationManager.isReadAccessAllowed()`），没法写自动化回归测试复现，只能人工在 `runIde` 沙箱里点一遍报告窗口的双击 / 右键 / 查看调用链 / 豁免
+
+## 调用链（2026-09-08，用户提出：想看从入口到 Mapper 的完整调用路径）
+- [x] `CallChainFinder`：从问题所在方法反向找调用者，深度上限 6、每层最多 5 个不同调用方法、总节点数上限 200，超限明确标出不静默截断
+- [x] 循环调用判定（同链上出现过的方法不再展开），单方法自递归、A↔B 互相调用两种都不会死循环
+- [x] 找不到调用者视为入口点（Controller / 定时任务 / 测试 / 反射调用 / 未使用，四种分不出来，如实写"未找到调用者"）
+- [x] 只在右键"查看调用链"时按需计算，不进批量扫描；`ProgressManager.runProcessWithProgressSynchronously` 包一层 `ReadAction.run`
+- [x] `CallChainDialog`：非模态、等宽字体只读文本框，渲染成缩进树（读法与 IDE 自带 Call Hierarchy 一致）
+- [x] 对任意规则的问题都能用：锚点解析用 `PsiTreeUtil.getParentOfType(anchor, PsiMethod.class)`，参数锚点和方法体内锚点都能找到所在方法
+- [x] `CallChainFinderTest` 6 例（简单链、A↔B 循环、自递归、多调用者分叉、无调用者、超过每层上限截断）
 
 ## 测试总数
 - checker-core：83
-- checker-idea：130（含 Heavy 4、端到端 50+）
+- checker-idea：136（含 Heavy 4、端到端 50+）
 
 ## 已知限制 / 待真机验证
 - 报告窗口、设置页、右键菜单等 Swing UI 未做自动化测试，需 `gradlew :checker-idea:runIde` 人工核对。责任人开关与右键查看提交信息需要在真实 Git 仓库里手动验证。
-- 双击跳转（`navigate()`）仍直接访问 PSI，理论上与本次修复的责任人渲染崩溃同一根因，只是尚未真机触发，见上一条。
+- 双击 / 右键导航已修复同一根因的崩溃（见上）；这类问题在 `runIde` 沙箱人工点一遍之外没有自动化手段能覆盖，改代码时留意"UI 事件处理里是否裸调了 PSI"。
 - Inspect Code 入口只注册在批量模式；跨文件位置（另一方法里的 put）只在报告窗口展示。实时提示只覆盖四条纯 Java 规则，默认关。
 - 豁免文件只支持"列表 + 平铺键值"形态的 YAML，锚点、多行字符串不支持。
 - 为了扫描速度（方案 17.1）：只用 insert / update / delete 且不提 receiver 类型名、也没有任何 selectXxx / queryForXxx 的 DAO 文件不会被发现；关掉 DAL-011 时，set 发生在扫描范围外的属性不再报 DAL-010。
 - 上游赋值分析只把字面量 null 当"没给值"，看不穿变量运行时是否恰好是 null；若 Mapper 方法参数声明为父类类型而调用点操作的是子类实例，两者 FQN 不一致，setterUsages 查不到会退化为 UNKNOWN（不影响正确性，只是少一条备注；Mapper 参数与调用点用同一具体类型的绝大多数场景不受影响）。
 - 责任人依赖已安装且已配置好的 VCS 插件（如 Git4Idea）；没有 VCS 支持或文件未提交时静默不显示，不报错。
+- 调用链只做"一个方法反向找调用者"，不做"参数值怎么变化"的数据流分析（那是 8.3 跨方法追踪的事）；深度 / 分支 / 总节点数都有上限，超大扇入（如很多地方都调用的公共方法）会在渲染里看到"还有更多调用者未展开"，不是漏了，是主动截断。
 - 短 id（`selectList("query")`）依赖 getAllKeys 快照，key 很多的超大项目首次查询稍慢。

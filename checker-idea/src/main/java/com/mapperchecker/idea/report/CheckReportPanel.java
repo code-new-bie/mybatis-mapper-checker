@@ -7,18 +7,25 @@ import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
 import com.intellij.openapi.actionSystem.ToggleAction;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.fileChooser.FileChooserFactory;
 import com.intellij.openapi.fileChooser.FileSaverDescriptor;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.progress.ProgressIndicator;
+import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileWrapper;
 import com.intellij.psi.PsiElement;
+import com.intellij.psi.PsiFile;
+import com.intellij.psi.PsiMethod;
+import com.intellij.psi.SmartPsiElementPointer;
+import com.intellij.psi.util.PsiTreeUtil;
 import com.mapperchecker.idea.vcs.GitBlameService;
 import com.intellij.ui.ColoredTreeCellRenderer;
 import com.intellij.ui.JBSplitter;
@@ -38,6 +45,7 @@ import com.mapperchecker.core.model.SourceLocation;
 import com.mapperchecker.core.model.Statistics;
 import com.mapperchecker.core.model.UnresolvedInvocation;
 import com.mapperchecker.idea.MapperCheckerBundle;
+import com.mapperchecker.idea.run.CallChainFinder;
 import com.mapperchecker.idea.run.CheckRunContext;
 import com.mapperchecker.idea.run.CheckRunner;
 import com.mapperchecker.idea.run.CheckScope;
@@ -49,6 +57,7 @@ import com.mapperchecker.idea.settings.MapperCheckerSettings;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import javax.swing.Action;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
 import javax.swing.JPanel;
@@ -57,6 +66,8 @@ import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreePath;
 import java.awt.BorderLayout;
+import java.awt.Dimension;
+import java.awt.Font;
 import java.awt.FlowLayout;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -306,10 +317,7 @@ public final class CheckReportPanel extends JPanel {
 
     private void navigateToJava(@Nullable ReportedIssue ri, @Nullable UnresolvedInvocation u) {
         if (ri != null) {
-            PsiElement e = ri.javaElement();
-            if (e != null && e.isValid()) {
-                navigate(e);
-            }
+            navigateToPointer(ri.javaAnchor());
         } else if (u != null && u.location().isKnown()) {
             VirtualFile vf = com.mapperchecker.idea.run.CheckRunContext.findFileForNavigation(u.location().filePath());
             if (vf != null) {
@@ -395,20 +403,100 @@ public final class CheckReportPanel extends JPanel {
                 MapperCheckerBundle.message("action.view.commit"));
     }
 
-    private void navigateToMapper(@Nullable ReportedIssue ri) {
-        if (ri == null) {
+    /**
+     * 查看调用链：从这条问题所在的方法开始，反向找调用者一直到入口点。真机反馈想知道一个参数
+     * 最初是从哪个入口一路传下来的。只对当前选中的一条按需计算，不进批量扫描——引用搜索这东西
+     * 一层层摊开，代价和扫一遍报告完全不是一个量级。
+     */
+    private void viewCallChain(ReportedIssue ri) {
+        if (ri.javaAnchor() == null) {
+            Messages.showInfoMessage(project, MapperCheckerBundle.message("report.callchain.unavailable"),
+                    MapperCheckerBundle.message("action.view.call.chain"));
             return;
         }
-        PsiElement e = ri.mapperElement();
-        if (e != null && e.isValid()) {
-            navigate(e);
+        String[] rendered = new String[1];
+        // resolve(javaElement) / isValid 都是 PSI 操作，必须整段包进 ReadAction，不能在进入这个
+        // lambda 之前就先调 ri.javaElement()——那样等于在 EDT 上裸调，真机崩过一次同类的
+        ProgressManager.getInstance().runProcessWithProgressSynchronously(() -> ApplicationManager.getApplication().runReadAction(() -> {
+            PsiElement anchor = ri.javaElement();
+            if (anchor == null || !anchor.isValid()) {
+                return;
+            }
+            PsiMethod method = PsiTreeUtil.getParentOfType(anchor, PsiMethod.class, false);
+            if (method == null) {
+                return;
+            }
+            CallChainFinder.Node root = new CallChainFinder(project)
+                    .build(method, ProgressManager.getInstance().getProgressIndicator());
+            rendered[0] = CallChainFinder.render(root);
+        }), MapperCheckerBundle.message("action.view.call.chain"), true, project);
+        if (rendered[0] == null) {
+            Messages.showInfoMessage(project, MapperCheckerBundle.message("report.callchain.unavailable"),
+                    MapperCheckerBundle.message("action.view.call.chain"));
+            return;
+        }
+        new CallChainDialog(project, rendered[0]).show();
+    }
+
+    /** 调用链弹窗：内容可能有好几层缩进，用等宽字体的只读文本区域，比 Messages 弹窗合适。 */
+    private static final class CallChainDialog extends DialogWrapper {
+        private final String text;
+
+        CallChainDialog(Project project, String text) {
+            super(project, false);
+            this.text = text;
+            setTitle(MapperCheckerBundle.message("report.callchain.dialog.title"));
+            setModal(false); // 不阻塞，方便对照报告和源码看
+            init();
+        }
+
+        @Override
+        protected @NotNull JComponent createCenterPanel() {
+            JBTextArea area = new JBTextArea(text);
+            area.setEditable(false);
+            area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+            area.setBorder(JBUI.Borders.empty(6));
+            JBScrollPane scroll = new JBScrollPane(area);
+            scroll.setPreferredSize(new Dimension(640, 420));
+            return scroll;
+        }
+
+        @Override
+        protected Action @NotNull [] createActions() {
+            return new Action[]{getOKAction()};
         }
     }
 
-    private void navigate(PsiElement e) {
-        VirtualFile vf = e.getContainingFile() == null ? null : e.getContainingFile().getVirtualFile();
-        if (vf != null) {
-            new OpenFileDescriptor(project, vf, e.getTextRange().getStartOffset()).navigate(true);
+    private void navigateToMapper(@Nullable ReportedIssue ri) {
+        if (ri != null) {
+            navigateToPointer(ri.mapperAnchor());
+        }
+    }
+
+    /**
+     * 解析 SmartPsiElementPointer 并跳转。真机崩过一次：resolve / isValid / getContainingFile /
+     * getTextRange 全都是 PSI 操作，双击 / 右键触发时是在 EDT 上、不在 read action 里，直接摸会被
+     * 2024.2+ 的线程模型断言拦下来。把这几步全包进一个 ReadAction，只把结果（VirtualFile + 偏移，
+     * 纯数据）带到 read action 外面，再执行真正的 {@code navigate}——跳转本身是 UI 操作，不需要
+     * （也不该）继续持有读锁。
+     */
+    private void navigateToPointer(@Nullable SmartPsiElementPointer<PsiElement> pointer) {
+        if (pointer == null) {
+            return;
+        }
+        VirtualFile[] vf = new VirtualFile[1];
+        int[] offset = new int[1];
+        ApplicationManager.getApplication().runReadAction(() -> {
+            PsiElement e = pointer.getElement();
+            if (e == null || !e.isValid()) {
+                return;
+            }
+            PsiFile f = e.getContainingFile();
+            vf[0] = f == null ? null : f.getVirtualFile();
+            offset[0] = e.getTextRange().getStartOffset();
+        });
+        if (vf[0] != null) {
+            new OpenFileDescriptor(project, vf[0], offset[0]).navigate(true);
         }
     }
 
@@ -485,7 +573,10 @@ public final class CheckReportPanel extends JPanel {
             @Override
             public void update(@NotNull AnActionEvent e) {
                 ReportedIssue ri = selectedIssue();
-                e.getPresentation().setEnabled(ri != null && ri.mapperElement() != null);
+                // 只判断指针是否存在（纯数据），不 resolve——update() 在 EDT 上被频繁调用，
+                // resolve 要 read action，这里不该为了一个"能不能点"就去碰 PSI；
+                // 真解析不出来，navigateToMapper 里再安全地判一次，无非是点了没反应
+                e.getPresentation().setEnabled(ri != null && ri.mapperAnchor() != null);
             }
 
             @Override
@@ -499,6 +590,25 @@ public final class CheckReportPanel extends JPanel {
                 ReportedIssue ri = selectedReportedIssue();
                 if (ri != null) {
                     viewCommit(ri);
+                }
+            }
+
+            @Override
+            public void update(@NotNull AnActionEvent e) {
+                e.getPresentation().setEnabled(selectedReportedIssue() != null);
+            }
+
+            @Override
+            public @NotNull com.intellij.openapi.actionSystem.ActionUpdateThread getActionUpdateThread() {
+                return com.intellij.openapi.actionSystem.ActionUpdateThread.EDT;
+            }
+        });
+        g.add(new DumbAwareAction(MapperCheckerBundle.message("action.view.call.chain")) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                ReportedIssue ri = selectedReportedIssue();
+                if (ri != null) {
+                    viewCallChain(ri);
                 }
             }
 
@@ -603,8 +713,9 @@ public final class CheckReportPanel extends JPanel {
         String at = java.time.LocalDate.now().toString();
         var exemption = new com.mapperchecker.core.contract.Exemption(ri.issue().ruleId(), ri.issue().suppressionKey(),
                 reason.trim(), by, at, "", 0);
-        PsiElement e = ri.javaElement();
-        VirtualFile issueFile = e == null || e.getContainingFile() == null ? null : e.getContainingFile().getVirtualFile();
+        // 拿文件走 primaryLocation（纯数据），不摸 PSI——这里在 EDT 上，之前直接用
+        // ri.javaElement().getContainingFile() 崩过（read-action 断言），fileOf 已经是修过的写法
+        VirtualFile issueFile = fileOf(ri);
         VirtualFile written = com.mapperchecker.idea.suppress.ExemptionService.getInstance(project).append(exemption, issueFile);
         if (written == null) {
             Messages.showErrorDialog(project, MapperCheckerBundle.message("exempt.failed"), MapperCheckerBundle.message("exempt.dialog.title"));

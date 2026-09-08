@@ -1025,6 +1025,28 @@ warm(files, indicator)        批量预热，工具栏"显示责任人"打开时
 **真机反馈（2026-09-08）修的一个线程崩溃**：`appendBlame` 最初直接用 `ri.javaElement().getContainingFile().getVirtualFile()` 拿文件，在树的展开 / 绘制过程里报
 `Read access is allowed from inside read-action only`——渲染发生在 Swing 布局线程上，没有 read action，碰 `PsiElement.getContainingFile()`（哪怕只读）会被 2024.2+ 的线程模型断言拦下来。改法沿用 `ReportedIssue.moduleName` 那次修复定下的同一条规矩：**渲染 / 预热阶段只准碰扫描时已经算好的纯数据，不准碰 PSI**——`appendBlame`、`addFileOf`（预热用的文件收集）、`viewCommit`（右键查看提交信息）统一改成从 `ContractIssue.primaryLocation()`（`filePath` + `line`，纯 `String`/`int`，扫描时的 read action 里已经算好）取文件，`VirtualFile` 用 `CheckRunContext.findFileForNavigation` 查（VFS 查找，不是 PSI，EDT 上一直安全，`navigateToJava` 的无法解析分支早就这么用）。
 
+同一天紧接着又报了一次：这次是**双击跳转**（`navigateToJava` → `ri.javaElement()`），同一根因，只是触发点不同——`javaElement()` 内部 resolve `SmartPsiElementPointer` 时会调 `isValid()`，这一步本身就要 read access，在 EDT 上裸调同样会崩。这次不能像 blame 那样绕开 PSI（导航需要精确到字符偏移，`primaryLocation` 的偏移是扫描时的静态快照，文件被编辑过后会跟实际位置有偏差，不如 `SmartPsiElementPointer` 准），改成把 resolve / isValid / getContainingFile / getTextRange 整段包进一个 `ReadAction.run`，只把结果（`VirtualFile` + 偏移）带出来，真正的 `navigate()`（UI 操作）留在 read action 外面执行——`navigateToJava` / `navigateToMapper` 统一走这个 `navigateToPointer` helper。"跳转到 Mapper"菜单项的 `update()`（EDT 上频繁调用）也顺手改成只判断指针是否为 null，不 resolve。
+
+### 14.6 调用链（真机反馈 2026-09-08 加入）
+
+想知道一个参数最初是从哪个入口（Controller / 定时任务 / 测试……）一路传下来的。与 8.3 的"跨方法追踪"（`callPath`，追的是参数对象怎么被一路构造出来，方向向下、随扫描一起算）不同，这个是反过来：从问题所在的方法开始**向上**找"谁调用了它"，只在报告右键"查看调用链"时按需算，不进批量扫描——引用搜索一层层摊开，代价和扫一遍报告完全不是一个量级。
+
+`CallChainFinder`：
+
+```text
+build(target, indicator)   以 target 为根，递归 MethodReferencesSearch 向上找调用者，构成一棵树
+  深度上限 6，每层最多展开 5 个不同调用方法（同一方法多处调用只算一次），
+  单方法引用搜索本身也设 300 条上限，总节点数上限 200——任何一处超限都在渲染里明说，不静默截断
+  同一条链上出现过的方法判定为循环调用，停止展开，不会死循环 / 栈溢出
+  展开到某个方法确实一个调用者都没有：视为入口点（Controller 方法 / 定时任务 / 测试 / 反射调用 /
+  未被使用，四种情况分不出来，如实写"未找到调用者"，不猜是哪种）
+render(root)                渲染成缩进树文本（读法与 IDE 自带 Call Hierarchy 一致：方法在上，调用者依次缩进在下）
+```
+
+只看项目源码（`GlobalSearchScope.projectScope`），不进依赖 jar——调用者只可能是用户自己的代码。锚点解析：`PsiTreeUtil.getParentOfType(anchor, PsiMethod.class)`，对参数锚点（声明参数、实体属性）和方法体内锚点（跨方法数据流、DAL-005/006 的方法名标识符）都能正确找到所在方法，因此这个动作对**任意规则**的问题都能用，不限于 DAL-001。
+
+必须在 ReadAction 内调用（`MethodReferencesSearch` 是 PSI 操作）；报告面板 `viewCallChain` 用 `ProgressManager.runProcessWithProgressSynchronously` 包一层 `ReadAction.run`，弹出的 `CallChainDialog` 是非模态的等宽字体只读文本框，方便对照报告和源码一起看。
+
 ---
 
 ## 15. 抑制与配置
