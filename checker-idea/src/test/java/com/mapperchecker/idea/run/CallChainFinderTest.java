@@ -93,6 +93,39 @@ public class CallChainFinderTest extends LightJavaCodeInsightFixtureTestCase {
         assertTrue(CallChainFinder.render(root).contains("未找到调用者"));
     }
 
+    public void test调用点经接口引用也能找到覆写方法的调用者() {
+        // 真机反馈的真实场景：XxxServiceImpl 实现 XxxService，真正的调用点是
+        // "@Autowired XxxService svc; svc.method();"——resolve() 落在接口方法上，不落在
+        // Impl 的覆写方法本身，strictSignatureSearch 必须是 false 才能找到
+        myFixture.addClass("""
+                package com.example;
+                public interface Svc {
+                    void refund();
+                }
+                """);
+        PsiClass impl = myFixture.addClass("""
+                package com.example;
+                public class SvcImpl implements Svc {
+                    public void refund() {}
+                }
+                """);
+        myFixture.addClass("""
+                package com.example;
+                public class Controller {
+                    private Svc svc;
+                    public void handle() { svc.refund(); }
+                }
+                """);
+        CallChainFinder.Node root = new CallChainFinder(getProject()).build(method(impl, "refund"), null);
+        assertFalse("不该判定为找不到调用者", root.callers.isEmpty());
+        assertEquals(1, root.callers.size());
+        assertEquals("handle", root.callers.get(0).method.getName());
+        String rendered = CallChainFinder.render(root);
+        assertTrue(rendered, rendered.contains("Controller.handle()"));
+        // 覆写方法且列出了调用点：应该提示"可能经接口调用"
+        assertTrue(rendered, rendered.contains("覆写方法"));
+    }
+
     public void test调用者过多会截断并说明() {
         StringBuilder callers = new StringBuilder();
         for (int i = 0; i < 8; i++) {

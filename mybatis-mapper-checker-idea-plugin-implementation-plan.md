@@ -1043,9 +1043,13 @@ build(target, indicator)   以 target 为根，递归 MethodReferencesSearch 向
 render(root)                渲染成缩进树文本（读法与 IDE 自带 Call Hierarchy 一致：方法在上，调用者依次缩进在下）
 ```
 
-只看项目源码（`GlobalSearchScope.projectScope`），不进依赖 jar——调用者只可能是用户自己的代码。锚点解析：`PsiTreeUtil.getParentOfType(anchor, PsiMethod.class)`，对参数锚点（声明参数、实体属性）和方法体内锚点（跨方法数据流、DAL-005/006 的方法名标识符）都能正确找到所在方法，因此这个动作对**任意规则**的问题都能用，不限于 DAL-001。
+只看项目源码（`GlobalSearchScope.projectScope`），不进依赖 jar——调用者只可能是用户自己的代码；这个 scope 本身就横跨全部 Module，不需要额外处理跨模块。锚点解析：`PsiTreeUtil.getParentOfType(anchor, PsiMethod.class)`，对参数锚点（声明参数、实体属性）和方法体内锚点（跨方法数据流、DAL-005/006 的方法名标识符）都能正确找到所在方法，因此这个动作对**任意规则**的问题都能用，不限于 DAL-001。
 
-必须在 ReadAction 内调用（`MethodReferencesSearch` 是 PSI 操作）；报告面板 `viewCallChain` 用 `ProgressManager.runProcessWithProgressSynchronously` 包一层 `ReadAction.run`，弹出的 `CallChainDialog` 是非模态的等宽字体只读文本框，方便对照报告和源码一起看。
+必须在 ReadAction 内调用（`MethodReferencesSearch` 是 PSI 操作）；报告面板 `viewCallChain` 用 `ProgressManager.runProcessWithProgressSynchronously` 包一层 `ApplicationManager.runReadAction`，弹出的 `CallChainDialog` 是非模态的等宽字体只读文本框，方便对照报告和源码一起看。
+
+**真机反馈（2026-09-08）修的一个漏报**：`TicketIndexDalServiceImpl.refundTicketIndexSafe()` 明明被调用，链条却在这里断了、判成入口点。根因是典型 Spring 分层——`XxxServiceImpl` 实现 `XxxService` 接口，真正的调用点是 `@Autowired XxxService svc; svc.method();`，这种调用点的 `resolve()` 落在**接口方法声明**上，不落在 Impl 的覆写方法本身；只搜 Impl 方法（哪怕 `MethodReferencesSearch` 的 `strictSignatureSearch` 参数传 `false`，实测也不行——那个参数管的是别的事，不是"顺带搜父类 / 接口方法"）会把这类调用点全部漏掉。改法是 `searchTargets(method)`：BFS 展开 `method.findSuperMethods()`，把该方法直接或间接覆写的**每一层**方法（接口方法、抽象父类方法……）都摸一遍 `MethodReferencesSearch`，结果按调用者方法去重合并。代价：如果一个接口有多个实现类，通过接口方法搜到的调用点未必都调的是这一个实现——`render()` 会在这类节点（自己列了调用者、又覆写了别的方法）后面加一句"（覆写方法，以下调用点可能经接口调用，若有多个实现类未必都调这一个）"，不装作能分清楚具体调的是哪个实现。两害相权：宁可多列几个疑似调用点，也不能把真实调用点判定为"没人调用"。
+
+`CallChainFinderHeavyTest`：跨 Module + 经接口调用同时验证（`module-service` 的 `SvcImpl implements Svc`，`module-web` 依赖 `service`、经 `Svc` 类型字段调用），确认 `GlobalSearchScope.projectScope` 本身没有跨模块问题，问题完全出在接口分派这一层。
 
 ---
 

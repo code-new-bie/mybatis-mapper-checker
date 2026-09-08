@@ -34,6 +34,13 @@ import java.util.Set;
  * {@link #MAX_DEPTH}，整棵树节点数上限 {@link #MAX_TOTAL_NODES}——超限的地方明确标出来，
  * 不静默截断（方案一贯的原则：可疑就说明白，不要看起来像"查完了"）。
  * <p>
+ * 除了搜方法本身，还要搜它（直接或间接）覆写的每一层方法：典型 Spring 分层里 ServiceImpl 实现
+ * 接口，真正的调用点大多经接口类型引用（{@code @Autowired Service svc; svc.method();}），这种
+ * 调用点的 resolve() 落在接口方法声明上，不落在 Impl 的覆写方法本身——只搜 Impl 方法会把这类调用点
+ * 全部漏掉，链条断在这里、误判成入口点（真机报告过一次，见 TASKS.md）。代价是：如果一个接口有
+ * 多个实现类，通过接口方法搜到的调用点未必都调的是这一个实现——渲染时会在这类节点后面加一句提示，
+ * 两害相权，宁可多列几个疑似调用点，也不能把真实调用点判定为"没人调用"。
+ * <p>
  * 必须在 ReadAction 内调用（PSI 引用搜索）。
  */
 public final class CallChainFinder {
@@ -88,17 +95,22 @@ public final class CallChainFinder {
         // 同一方法可能被同一个调用方多处调用（循环体里、多个分支……），归并成一个调用者节点
         Map<PsiMethod, PsiElement> callerMethods = new LinkedHashMap<>();
         int[] seen = {0};
-        MethodReferencesSearch.search(node.method, scope, true).forEach(ref -> {
-            if (indicator != null) {
-                indicator.checkCanceled();
+        for (PsiMethod target : searchTargets(node.method)) {
+            if (seen[0] >= MAX_REFS_PER_METHOD) {
+                break; // 本层已经摸到引用扫描上限，别再搜下一层 super method 了
             }
-            seen[0]++;
-            PsiMethod caller = PsiTreeUtil.getParentOfType(ref.getElement(), PsiMethod.class);
-            if (caller != null) {
-                callerMethods.putIfAbsent(caller, ref.getElement());
-            }
-            return seen[0] < MAX_REFS_PER_METHOD;
-        });
+            MethodReferencesSearch.search(target, scope, true).forEach(ref -> {
+                if (indicator != null) {
+                    indicator.checkCanceled();
+                }
+                seen[0]++;
+                PsiMethod caller = PsiTreeUtil.getParentOfType(ref.getElement(), PsiMethod.class);
+                if (caller != null) {
+                    callerMethods.putIfAbsent(caller, ref.getElement());
+                }
+                return seen[0] < MAX_REFS_PER_METHOD;
+            });
+        }
 
         int shown = 0;
         for (Map.Entry<PsiMethod, PsiElement> e : callerMethods.entrySet()) {
@@ -124,9 +136,15 @@ public final class CallChainFinder {
     /** 渲染成缩进树文本，方法在上、调用者依次缩进在下——和 IDE 自带的 Call Hierarchy 读法一致。 */
     public static String render(Node root) {
         StringBuilder sb = new StringBuilder();
-        sb.append(describe(root.method)).append('\n');
+        sb.append(describe(root.method)).append(overrideHint(root)).append('\n');
         renderChildren(root, "", sb);
         return sb.toString();
+    }
+
+    /** 一个节点自己列了调用者、又覆写了接口 / 父类方法时，提醒这些调用点未必都调的是这一个实现。 */
+    private static String overrideHint(Node node) {
+        return !node.callers.isEmpty() && overridesSomething(node.method)
+                ? "  （覆写方法，以下调用点可能经接口调用，若有多个实现类未必都调这一个）" : "";
     }
 
     private static void renderChildren(Node node, String prefix, StringBuilder sb) {
@@ -146,12 +164,38 @@ public final class CallChainFinder {
             if (child.callSite != null) {
                 sb.append("  ").append(Locations.of(child.callSite).display());
             }
-            sb.append(child.cycle ? "  ↺ 循环调用，不再展开" : "").append('\n');
+            sb.append(child.cycle ? "  ↺ 循环调用，不再展开" : "").append(overrideHint(child)).append('\n');
             renderChildren(child, childPrefix, sb);
         }
         if (node.truncatedCallers) {
             sb.append(prefix).append("└─ … 还有更多调用者未展开（超过上限）\n");
         }
+    }
+
+    private static boolean overridesSomething(PsiMethod m) {
+        return m.findSuperMethods().length > 0;
+    }
+
+    /**
+     * method 本身 + 它直接或间接覆写的每一层方法（接口方法、父类方法……）——调用点可能经这条
+     * 覆写链上任意一层的静态类型引用调用，只搜 method 自己会漏掉经接口 / 父类引用的真实调用点。
+     */
+    private static List<PsiMethod> searchTargets(PsiMethod method) {
+        List<PsiMethod> targets = new ArrayList<>();
+        Set<PsiMethod> seen = new HashSet<>();
+        java.util.Deque<PsiMethod> queue = new java.util.ArrayDeque<>();
+        queue.add(method);
+        while (!queue.isEmpty()) {
+            PsiMethod m = queue.poll();
+            if (!seen.add(m)) {
+                continue;
+            }
+            targets.add(m);
+            for (PsiMethod s : m.findSuperMethods()) {
+                queue.add(s);
+            }
+        }
+        return targets;
     }
 
     private static String describe(PsiMethod m) {

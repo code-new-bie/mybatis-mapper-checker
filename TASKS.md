@@ -160,11 +160,17 @@
 - [x] 只在右键"查看调用链"时按需计算，不进批量扫描；`ProgressManager.runProcessWithProgressSynchronously` 包一层 `ReadAction.run`
 - [x] `CallChainDialog`：非模态、等宽字体只读文本框，渲染成缩进树（读法与 IDE 自带 Call Hierarchy 一致）
 - [x] 对任意规则的问题都能用：锚点解析用 `PsiTreeUtil.getParentOfType(anchor, PsiMethod.class)`，参数锚点和方法体内锚点都能找到所在方法
-- [x] `CallChainFinderTest` 6 例（简单链、A↔B 循环、自递归、多调用者分叉、无调用者、超过每层上限截断）
+- [x] `CallChainFinderTest` 7 例（简单链、A↔B 循环、自递归、多调用者分叉、无调用者、超过每层上限截断、经接口引用调用）
+
+## 调用链漏报修复（2026-09-08，真机反馈：明明被调用却判成了入口点）
+- [x] 根因：`XxxServiceImpl` 实现 `XxxService`，真正调用点经接口类型引用（`@Autowired XxxService svc; svc.method()`），resolve() 落在接口方法上，不落在 Impl 覆写方法本身；`MethodReferencesSearch` 的 `strictSignatureSearch` 参数实测跟这个无关（先按"改成 false"试过，仍然找不到）
+- [x] 改法：`searchTargets(method)` BFS 展开 `method.findSuperMethods()`，把该方法覆写链上每一层（接口方法、抽象父类方法）都摸一遍引用搜索，按调用者方法去重合并
+- [x] 代价：接口有多个实现类时，通过接口方法搜到的调用点未必都调的是这一个实现——`render()` 在这类节点后面加提示"（覆写方法，以下调用点可能经接口调用，若有多个实现类未必都调这一个）"，不装作能分清具体调的是哪个实现
+- [x] `CallChainFinderHeavyTest`：跨 Module + 经接口调用同时验证，确认 `GlobalSearchScope.projectScope` 本身没有跨模块问题（用户曾怀疑"调用方可能跨模块了"），问题完全出在接口分派这一层
 
 ## 测试总数
 - checker-core：83
-- checker-idea：136（含 Heavy 4、端到端 50+）
+- checker-idea：138（含 Heavy 5、端到端 50+）
 
 ## 已知限制 / 待真机验证
 - 报告窗口、设置页、右键菜单等 Swing UI 未做自动化测试，需 `gradlew :checker-idea:runIde` 人工核对。责任人开关与右键查看提交信息需要在真实 Git 仓库里手动验证。
@@ -175,4 +181,5 @@
 - 上游赋值分析只把字面量 null 当"没给值"，看不穿变量运行时是否恰好是 null；若 Mapper 方法参数声明为父类类型而调用点操作的是子类实例，两者 FQN 不一致，setterUsages 查不到会退化为 UNKNOWN（不影响正确性，只是少一条备注；Mapper 参数与调用点用同一具体类型的绝大多数场景不受影响）。
 - 责任人依赖已安装且已配置好的 VCS 插件（如 Git4Idea）；没有 VCS 支持或文件未提交时静默不显示，不报错。
 - 调用链只做"一个方法反向找调用者"，不做"参数值怎么变化"的数据流分析（那是 8.3 跨方法追踪的事）；深度 / 分支 / 总节点数都有上限，超大扇入（如很多地方都调用的公共方法）会在渲染里看到"还有更多调用者未展开"，不是漏了，是主动截断。
+- 调用链搜索会连带摸覆写链上的接口 / 父类方法：如果一个接口有多个实现类，某个 Impl 节点列出的调用点未必全都调的是这一个实现（也可能调的是同接口的另一个实现），`render()` 会在这类节点上提示，不保证精确到"这一个实现"。
 - 短 id（`selectList("query")`）依赖 getAllKeys 快照，key 很多的超大项目首次查询稍慢。
