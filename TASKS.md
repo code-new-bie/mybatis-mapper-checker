@@ -116,13 +116,45 @@
 - [x] 占位符没给值 → statement 标 partiallyParsed，不报 DAL-001，进"无法解析"分组
 - [x] IncludePropertyEndToEndTest 9 例（自闭合 / 带 property / 片段套片段 / 跨文件全限定 refid / 拼参数名 / 拼列名 / 缺值 / 多层传递）
 
+## 上游赋值分析（2026-09-07，真机反馈：query.dataStatuses 报未使用，但看不出是谁的锅）
+- [x] core：`UpstreamStatus`（ASSIGNED / NOT_ASSIGNED / UNKNOWN，只把字面量 null 当"没给值"）、`Confidence.raise()` / `.lower()`
+- [x] `CheckSettings.upstreamAssignmentAnalysis`（默认开），设置页新增开关
+- [x] `SetterEvidence`（位置 + 是否见过非 null 值），`JavaRules.recordSetterUsage` 顺手登记；`setterUsages` 与 DAL-010 共用
+- [x] `UpstreamAssignmentAnalyzer`：DAL-001 声明的参数（查方法调用点实参）与实体属性（查 setterUsages）；DAL-010 在 `QueryClassRules.check` 生成时就地调整
+- [x] `CheckRunContext.callSiteScope`：给上游分析复用单 Map 参数调用点追踪的同一个范围
+- [x] `CheckRunner.needsJavaFileScan`：分析开着时即使四条纯 Java 规则和 DAL-010/011 都关也要跑 Java 文件扫描
+- [x] UpstreamAssignmentAnalyzerEndToEndTest 8 例（声明参数 ASSIGNED / NOT_ASSIGNED / 找不到调用点、实体属性 ASSIGNED / NOT_ASSIGNED、DAL-010 两种、开关关闭）
+
+## 责任人（2026-09-07，真机反馈：想按人分派认领）
+- [x] `GitBlameService`（Project 服务，实现 Disposable）：走平台通用 `AnnotationProvider`，不认哪个具体 VCS；按文件 + modificationStamp 缓存 `FileAnnotation`
+- [x] `blameLineCached`（只读，EDT 安全）与 `blameLine`/`warm`（后台线程，真正触发 annotate）分离
+- [x] `plugin.xml` 新增硬依赖 `com.intellij.modules.vcs`
+- [x] 报告工具栏"显示责任人"开关（默认关，打开后台预热当前列表涉及的文件）；右键"查看该处提交信息"（单条即时查）
+- [x] GitBlameServiceTest 3 例（无 VCS 时优雅返回 null、行号越界、重复 dispose）
+
+## 实体属性级 DAL-001 锚点修正（2026-09-08，真机反馈：双击跳到了实体属性，没跳到对应的 DAO 方法）
+- [x] `MethodSignatureParameterResolver`：单 Bean / `@Param` Bean 展开属性时，`ParameterReference` 的 location 改用声明该实体的方法参数本身，不再用 `BeanPropertyCollector.collect` 给出的属性锚点
+- [x] `ContractCheckEngine.anchorFor` 因此直接匹配上，原先专门加的 `anchorForBeanParam` 兜底整段撤掉——两种声明级 DAL-001（普通参数、实体属性）现在走同一套锚点逻辑
+- [x] `UpstreamAssignmentAnalyzer`：判定"锚点是实体属性还是普通参数"改用参数的**类型**（`BeanPropertyCollector.expandableBeanClass`），不能再用"是不是 PsiParameter"，因为两种现在都是 PsiParameter
+- [x] DAL-010 / DAL-011 不受影响：那两条是跨 statement 聚合，没有唯一对应的 DAO 方法可跳，继续锚定在实体属性上
+- [x] 更新 `BeanPropertyEndToEndTest`（新增 `@Param` Bean 场景的锚点断言）、`MethodSignatureAndAnnotationTest`
+
+## 责任人渲染线程崩溃（2026-09-08，真机反馈：展开报告树时报 read-action 断言异常）
+- [x] 根因：`appendBlame`/`addFileOf`/`viewCommit` 直接用 `ri.javaElement().getContainingFile()` 拿文件——渲染发生在 Swing 布局线程，没有 read action，碰 PSI（哪怕只读）被 2024.2+ 线程模型拦下
+- [x] 统一改成从 `ContractIssue.primaryLocation()`（纯 `String`/`int`，扫描时已算好）取文件路径 + 行号，`VirtualFile` 用 `CheckRunContext.findFileForNavigation`（VFS 查找，非 PSI，EDT 安全）
+- [x] 规矩延续 `ReportedIssue.moduleName` 那次修复的原则：渲染 / 预热阶段只碰纯数据，不碰 PSI
+- [ ] 已知同类风险未动：`navigate()`/`navigateToJava()`/`navigateToMapper()` 双击导航时同样直接摸 `PsiElement.getContainingFile()`/`getTextRange()`，理论上有同样的崩溃可能，只是触发频率低（单次点击 vs 每次重绘）还没被真机踩到；等它真的出问题、或用户要求时再一并处理
+
 ## 测试总数
-- checker-core：84
-- checker-idea：106（含 Heavy 4、端到端 39）
+- checker-core：83
+- checker-idea：130（含 Heavy 4、端到端 50+）
 
 ## 已知限制 / 待真机验证
-- 报告窗口、设置页、右键菜单等 Swing UI 未做自动化测试，需 `gradlew :checker-idea:runIde` 人工核对。
+- 报告窗口、设置页、右键菜单等 Swing UI 未做自动化测试，需 `gradlew :checker-idea:runIde` 人工核对。责任人开关与右键查看提交信息需要在真实 Git 仓库里手动验证。
+- 双击跳转（`navigate()`）仍直接访问 PSI，理论上与本次修复的责任人渲染崩溃同一根因，只是尚未真机触发，见上一条。
 - Inspect Code 入口只注册在批量模式；跨文件位置（另一方法里的 put）只在报告窗口展示。实时提示只覆盖四条纯 Java 规则，默认关。
 - 豁免文件只支持"列表 + 平铺键值"形态的 YAML，锚点、多行字符串不支持。
 - 为了扫描速度（方案 17.1）：只用 insert / update / delete 且不提 receiver 类型名、也没有任何 selectXxx / queryForXxx 的 DAO 文件不会被发现；关掉 DAL-011 时，set 发生在扫描范围外的属性不再报 DAL-010。
+- 上游赋值分析只把字面量 null 当"没给值"，看不穿变量运行时是否恰好是 null；若 Mapper 方法参数声明为父类类型而调用点操作的是子类实例，两者 FQN 不一致，setterUsages 查不到会退化为 UNKNOWN（不影响正确性，只是少一条备注；Mapper 参数与调用点用同一具体类型的绝大多数场景不受影响）。
+- 责任人依赖已安装且已配置好的 VCS 插件（如 Git4Idea）；没有 VCS 支持或文件未提交时静默不显示，不报错。
 - 短 id（`selectList("query")`）依赖 getAllKeys 快照，key 很多的超大项目首次查询稍慢。

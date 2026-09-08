@@ -73,8 +73,11 @@ public final class JavaRules {
     private final Reporter reporter;
     /** 被反射拷贝当作目标的类全限定名，可为 null（实时 Inspection 不需要）。 */
     private final @Nullable Set<String> reflectiveCopyTargets;
-    /** 扫描过程中顺带登记的 setter 调用："实体全限定名#属性" → 调用位置，供 DAL-010 免去引用搜索。 */
-    private final @Nullable Map<String, String> setterUsages;
+    /**
+     * 扫描过程中顺带登记的 setter 调用："实体全限定名#属性" → 证据（位置 + 是否传过非 null 值）。
+     * 供 DAL-010 免去引用搜索，也供上游赋值分析共用。
+     */
+    private final @Nullable Map<String, SetterEvidence> setterUsages;
     private @Nullable QueryClassIndex queryClassIndex;
 
     public JavaRules(@NotNull Project project, @NotNull CheckSettings settings, @NotNull Reporter reporter) {
@@ -87,7 +90,7 @@ public final class JavaRules {
     }
 
     public JavaRules(@NotNull Project project, @NotNull CheckSettings settings, @NotNull Reporter reporter,
-                     @Nullable Set<String> reflectiveCopyTargets, @Nullable Map<String, String> setterUsages) {
+                     @Nullable Set<String> reflectiveCopyTargets, @Nullable Map<String, SetterEvidence> setterUsages) {
         this.project = project;
         this.settings = settings;
         this.rules = settings.rules();
@@ -134,7 +137,9 @@ public final class JavaRules {
         boolean want020 = settings.isEnabled(RuleId.DAL_020);
         boolean want004 = settings.isEnabled(RuleId.DAL_004);
         boolean want030 = settings.isEnabled(RuleId.DAL_030);
-        if (!want020 && !want004 && !want030) {
+        // setterUsages 非空说明调用方（DAL-010/011 或上游赋值分析）还需要顺手登记 setter 调用，
+        // 即使三条按文件规则都关了也不能提前返回
+        if (!want020 && !want004 && !want030 && setterUsages == null) {
             return;
         }
         for (PsiMethodCallExpression call : PsiTreeUtil.findChildrenOfType(file, PsiMethodCallExpression.class)) {
@@ -169,6 +174,9 @@ public final class JavaRules {
      * 登记 {@code x.setFoo(v)}：DAL-010 要判断"有没有人 set 过"，逐属性做全项目引用搜索代价极高
      * （setStatus 这类名字满项目都是，每个候选文件都要解析、解引用）。这里在本来就要遍历的文件上顺手记下来，
      * 让 DAL-010 走查表；查不到的少数属性才回退到引用搜索。
+     * <p>
+     * 同时给上游赋值分析记一笔"传的是不是字面量 null"——这条判断很朴素，只把 {@code null} 当"没给值"，
+     * 其余（变量、方法调用……）一律算"给了值"，宁可漏报也不装作能看穿数据流。
      */
     private void recordSetterUsage(PsiMethodCallExpression call, String setterName) {
         if (setterUsages == null) {
@@ -190,7 +198,15 @@ public final class JavaRules {
         if (owner == null || owner.getQualifiedName() == null) {
             return;
         }
-        setterUsages.putIfAbsent(owner.getQualifiedName() + "#" + prop, Locations.of(call).display());
+        boolean realValue = !isNullLiteral(call.getArgumentList().getExpressions()[0]);
+        SetterEvidence evidence = new SetterEvidence(Locations.of(call).display(), realValue);
+        setterUsages.merge(owner.getQualifiedName() + "#" + prop, evidence, SetterEvidence::merge);
+    }
+
+    /** 字面量 null（含括号包裹）。 */
+    static boolean isNullLiteral(@Nullable PsiExpression e) {
+        e = unwrap(e);
+        return e instanceof PsiLiteralExpression lit && lit.getValue() == null;
     }
 
     /** 记录反射拷贝的目标类型：已登记参数顺序的按目标位置取，未登记的两个实参都算。 */

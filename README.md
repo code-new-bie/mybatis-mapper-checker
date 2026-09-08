@@ -41,6 +41,8 @@ DAL-010 / 011 / 021 需要全局信息，只在 Module 或整项目范围运行�
 
 内置分页 / 排序参数名单（pageNum、pageSize、offset、limit、orderBy 等）默认忽略，避免 PageHelper、MyBatis-Plus 场景大量误报；实体属性级结果标低置信度，两者都可在设置里关闭。
 
+上游赋值分析（默认开）：DAL-001 / DAL-010 报出来后，再看一眼"上游到底有没有真的给过值"——调用点传了非 null 的实参 / setter 值，说明值被静默丢弃，置信度上调；找到的赋值全是字面量 `null`，说明大概率是可以直接删的死参数，置信度下调；判断不了（反射调用、扫描范围外）就不下结论，原样展示。
+
 覆盖的 Mapper 写法：MyBatis XML、`@Select` 等注解 SQL（含 `<script>`）、iBatis 2 XML、`<include>` 跨文件展开、`parameterMap`。
 
 ## 使用
@@ -50,7 +52,7 @@ DAL-010 / 011 / 021 需要全局信息，只在 Module 或整项目范围运行�
 - Tools → MyBatis Mapper Checker → 检查整个项目
 - Analyze → Inspect Code，勾选 MyBatis Mapper 参数契约（批量模式）
 
-结果在底部工具窗口 `MyBatis Mapper Checker` 中，按 Module → 文件分组，带置信度与备注。双击跳到 Java 位置，右键可跳 Mapper、豁免此处、忽略此处 / 参数 / statement、导出 Markdown / CSV。
+结果在底部工具窗口 `MyBatis Mapper Checker` 中，按 Module → 文件分组，带置信度与备注。双击跳到 Java 位置，右键可跳 Mapper、豁免此处、忽略此处 / 参数 / statement、查看该处提交信息、导出 Markdown / CSV。工具栏"显示责任人"（默认关，需要项目在版本控制下且装了对应 VCS 插件如 Git4Idea）打开后，每条问题后面会带上最后修改它的作者与日期，方便按人分派。
 
 编辑器默认不出现任何实时波浪线。设置里打开"实时提示纯 Java 规则"后，DAL-004 / 020 / 022 / 030 这四条不依赖 Mapper 的规则会在编辑器里即时提示。
 
@@ -77,7 +79,7 @@ params.put("debugFlag", flag); // mapper-checker: ignore
 
 `reason` / `by` / `at` 缺一条即无效，报告会提示。报告右键"豁免此处"会自动追加一条。
 
-设置页（Settings → Tools → MyBatis Mapper Checker）可配置忽略参数（支持 `page*`）、忽略 statement、组合抑制、忽略路径模式（如 `**/mapper/oracle/**`）、跨方法追踪深度、严格 / 兼容可见性模式、规则启停与级别、Query 类后缀、拷贝方法源参数位置、模板 statement 列表、实时提示开关。配置存放在 `.idea/mybatis-mapper-checker.xml`。
+设置页（Settings → Tools → MyBatis Mapper Checker）可配置忽略参数（支持 `page*`）、忽略 statement、组合抑制、忽略路径模式（如 `**/mapper/oracle/**`）、跨方法追踪深度、严格 / 兼容可见性模式、规则启停与级别、Query 类后缀、拷贝方法源参数位置、模板 statement 列表、实时提示开关、上游赋值分析开关。配置存放在 `.idea/mybatis-mapper-checker.xml`。
 
 ## 开发
 

@@ -116,7 +116,9 @@ public final class ContractCheckEngine {
             // DAL-003：模板语句的 <if> 判断字段与块内绑定字段
             mapperSideRules.checkTemplateBinding(inv.statementId(), statement);
 
-            // 声明级 DAL-001（含实体属性级，锚点可能在实体类文件里）
+            // 声明级 DAL-001（含实体属性级——锚点已经是本方法里声明该实体的参数，
+            // 见 MethodSignatureParameterResolver：真机反馈双击不该跳到实体属性声明处，
+            // 那样看不出是哪个 DAO 方法、哪个 statement 的事）
             if (withOp.hasComparableParameters()) {
                 for (ContractIssue issue : ctx.contractEngine.check(withOp, statement)) {
                     PsiElement a = anchorFor(method, issue);

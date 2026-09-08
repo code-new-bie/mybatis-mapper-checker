@@ -14,6 +14,7 @@ import com.intellij.psi.util.InheritanceUtil;
 import com.intellij.psi.util.TypeConversionUtil;
 import com.mapperchecker.core.model.ParameterReference;
 import com.mapperchecker.core.model.ParameterSourceType;
+import com.mapperchecker.core.model.SourceLocation;
 import com.mapperchecker.core.naming.AliasGroupBuilder;
 import com.mapperchecker.idea.util.Locations;
 import org.jetbrains.annotations.NotNull;
@@ -94,8 +95,11 @@ public final class MethodSignatureParameterResolver {
             }
             List<ParameterReference> props = new ArrayList<>();
             String owner = bean.getName() == null ? "" : bean.getName();
+            // 锚点用这个参数本身（真机反馈：双击应该跳到"对应的 DAO 方法"，而不是实体属性的声明处，
+            // 那样看不出是哪个方法、哪个 statement 的事；属性名已经在消息文案里，不靠位置区分）
+            SourceLocation paramLoc = Locations.of(only);
             for (var entry : BeanPropertyCollector.collect(bean).entrySet()) {
-                props.add(ParameterReference.beanProperty(entry.getKey(), entry.getKey(), owner, Locations.of(entry.getValue())));
+                props.add(ParameterReference.beanProperty(entry.getKey(), entry.getKey(), owner, paramLoc));
             }
             return props.isEmpty() ? Result.notComparable() : new Result(Mode.COMPARABLE, props, null);
         }
@@ -110,9 +114,9 @@ public final class MethodSignatureParameterResolver {
                 PsiClass bean = BeanPropertyCollector.expandableBeanClass(p.getType());
                 if (bean != null) {
                     String owner = bean.getName() == null ? "" : bean.getName();
+                    SourceLocation paramLoc = Locations.of(p); // 同上：锚点用参数本身，不用实体属性声明处
                     for (var entry : BeanPropertyCollector.collect(bean).entrySet()) {
-                        refs.add(ParameterReference.beanProperty(named, named + "." + entry.getKey(), owner,
-                                Locations.of(entry.getValue())));
+                        refs.add(ParameterReference.beanProperty(named, named + "." + entry.getKey(), owner, paramLoc));
                     }
                 }
             } else {

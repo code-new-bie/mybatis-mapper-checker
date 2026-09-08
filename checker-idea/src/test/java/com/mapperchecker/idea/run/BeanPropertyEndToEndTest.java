@@ -95,17 +95,44 @@ public class BeanPropertyEndToEndTest extends LightJavaCodeInsightFixtureTestCas
             }
             assertEquals(Confidence.LOW, i.confidence());
             assertTrue(i.message(), i.message().startsWith("实体 'OrderQuery' 的属性 '"));
-            assertTrue(i.primaryLocation().filePath().endsWith("OrderQuery.java"));
+            // 真机反馈：双击应该跳到"对应的 DAO 方法"而不是实体属性声明处，那样看不出是哪个方法、
+            // 哪个 statement 的事——锚点已经改成本方法里声明这个实体的参数，属性名靠消息文案区分
+            assertTrue(i.primaryLocation().filePath().endsWith("OrderMapper.java"));
         }
-        // 锚点在实体字段上，可导航
+        // 锚点在 DAO 方法的参数上，双击可直接跳到对应方法（不是随便哪个元素，就是 q 这个参数）
         for (ReportedIssue ri : o.reported()) {
             if (ri.issue().ruleId() != RuleId.DAL_001) {
                 continue;
             }
             assertNotNull(ri.javaElement());
-            assertTrue(ri.javaElement().getContainingFile().getName().equals("OrderQuery.java"));
+            assertTrue(ri.javaElement().getContainingFile().getName().equals("OrderMapper.java"));
+            assertTrue(ri.javaElement() instanceof com.intellij.psi.PsiParameter p && "q".equals(p.getName()));
         }
         assertEquals(1, o.result().issues().stream().filter(i -> i.ruleId() == RuleId.DAL_022).count());
+    }
+
+    public void test带Param的Bean属性级检查_锚点也在DAO方法参数上() {
+        myFixture.addFileToProject("mapper/OrderMapper.xml", """
+                <mapper namespace="%s">
+                    <select id="query">SELECT * FROM orders WHERE merchant_id = #{query.merchantId}</select>
+                </mapper>
+                """.formatted(NS));
+        myFixture.addClass("""
+                package com.example.dao;
+                import org.apache.ibatis.annotations.Param;
+                import com.example.OrderQuery;
+                public interface OrderMapper { java.util.List<Object> query(@Param("query") OrderQuery query); }
+                """);
+        CheckRunner.Outcome o = run(CheckSettings.defaults());
+        // @Param("query") 展开的属性路径带前缀 "query."（address 没被任何条件引用，也一并报出）
+        assertEquals(Set.of("query.poiId", "query.status", "query.address"), params(o, RuleId.DAL_001));
+        for (ReportedIssue ri : o.reported()) {
+            if (ri.issue().ruleId() != RuleId.DAL_001) {
+                continue;
+            }
+            assertTrue(ri.javaElement() instanceof com.intellij.psi.PsiParameter p && "query".equals(p.getName()));
+            assertTrue(ri.javaElement().getContainingFile().getName().equals("OrderMapper.java"));
+        }
     }
 
     public void test关闭分页忽略后分页属性照常报() {

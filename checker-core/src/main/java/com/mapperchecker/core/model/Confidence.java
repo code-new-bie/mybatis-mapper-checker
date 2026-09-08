@@ -12,4 +12,20 @@ public enum Confidence {
     public Confidence min(Confidence other) {
         return this.ordinal() >= other.ordinal() ? this : other;
     }
+
+    /** 上调一级（HIGH 不变）。用于"有新证据支持，但静态分析仍不能打包票"的场景，不越级到 HIGH。 */
+    public Confidence raise() {
+        return switch (this) {
+            case LOW -> MEDIUM;
+            case MEDIUM, HIGH -> HIGH;
+        };
+    }
+
+    /** 下调一级（LOW 不变）。 */
+    public Confidence lower() {
+        return switch (this) {
+            case HIGH -> MEDIUM;
+            case MEDIUM, LOW -> LOW;
+        };
+    }
 }

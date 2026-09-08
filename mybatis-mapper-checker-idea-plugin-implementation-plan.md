@@ -294,6 +294,8 @@ public final class CheckResult {
 | Bean setter | 低 | 参数来自 Bean setter，该属性可能另有用途，请人工确认 |
 | 实体属性（单 Bean / `@Param` Bean 展开） | 低 | 属性来自实体类声明，该实体可能被多个 statement 共用，请人工确认 |
 
+实体属性级 DAL-001 的 Java 侧锚点（双击跳转、`primaryLocation`）落在**声明该实体的 DAO 方法参数上**，不落在实体类自己的字段 / getter / setter 上（2026-09-07 真机反馈：原来落在实体属性上，看不出是哪个方法、哪个 statement 的事；属性名已经在消息文案里，不靠位置区分）。DAL-010 / DAL-011 不受影响，仍然锚定在实体属性上——那两条本来就是跨 statement 聚合的，没有唯一对应的 DAO 方法可跳。
+
 ### 6.1A 内置分页参数忽略（真机试用后加入）
 
 PageHelper、MyBatis-Plus、手写分页都会把 pageNum / pageSize / offset / limit / orderBy 等放进参数对象，SQL 里不引用（由拦截器拼 LIMIT）。
@@ -301,6 +303,33 @@ PageHelper、MyBatis-Plus、手写分页都会把 pageNum / pageSize / offset / 
 默认开启忽略，设置里可关闭或补充。带路径时只看最后一段（`q.pageSize` → `pageSize`）。
 
 置信度只影响报告排序和展示，不影响是否报告。原则：**报告可疑，而不是断言错误**，由使用者判断。
+
+### 6.1B 上游赋值分析（真机反馈 2026-09-07 加入）
+
+真机场景：`query.dataStatuses` 声明了却没在 SQL 里用，报告只说"未使用"，看不出这值是上游真传了、还是压根没人给过——前者更像 bug（值被静默丢弃），后者更像历史遗留（死参数，删了就是）。`UpstreamAssignmentAnalyzer` 在 `CheckRunContext.finish()` 里对已经报出来的 DAL-001（声明的参数、实体属性）与 DAL-010 做一次调整，只影响置信度与备注，不影响是否报告。设置项 `upstreamAssignmentAnalysis` 默认开。
+
+判定很朴素，只把字面量 `null` 当"没给值"，其余（变量、方法调用、new 出来的对象……）一律当"给了值"：
+
+锚点现在都是 `PsiParameter`（见 6.1 的锚点说明：实体属性级也锚定在 DAO 方法的参数上），不能再靠"是不是 PsiParameter"区分两种来源，改按参数的**类型**分流：
+
+```text
+参数类型不是可展开的 Bean（标量 / 集合 / 数组，PARAM_ANNOTATION / METHOD_PARAM）
+  → 找该 Mapper 方法的调用点（与单 Map 参数调用点追踪同一个 callSiteScope），看对应位置的实参
+  → 找到一处非 null 实参就够了，早停：ASSIGNED，confidence.raise()
+  → 全部调用点都传字面量 null：NOT_ASSIGNED，confidence.lower()
+  → 一个调用点都没找到（反射调用 / 尚未接入）：UNKNOWN，不下结论，原样返回
+
+参数类型是可展开的 Bean（实体属性 BEAN_PROPERTY，与 DAL-010）
+  → owner 直接取参数的类型（不再从锚点向上找外层 PsiClass——锚点在 DAO 方法里，向上找到的是
+    Mapper 接口，不是实体类），复用扫描阶段登记的 setterUsages 表
+    （"实体全限定名#属性" → SetterEvidence：位置 + 是否见过非 null 值）
+  → 命中且 anyRealValue：ASSIGNED；命中但全是 null：NOT_ASSIGNED；没命中：UNKNOWN
+  → 已知限制：若 Mapper 方法参数声明为父类类型（如 BaseQuery），而调用点实际构造并操作的是子类
+    （OrderQuery），两者 FQN 不一致，setterUsages 查不到——退化为 UNKNOWN，不影响正确性，只是少一条备注。
+    Mapper 参数与调用点用同一个具体类型（绝大多数场景）不受影响
+```
+
+`Confidence.raise()` / `.lower()`：HIGH 不再升、LOW 不再降，中间各挪一级，静态分析不装作能看穿数据流，不越级到 HIGH。
 
 ### 6.2 DAL-005 对 Mapper 接口的含义
 
@@ -977,6 +1006,25 @@ DAL-006：`'OrderMapper.queryOrder' 匹配到多个 Mapper statement，无法确
 - 检查运行中编辑文件不崩溃，位置用 `SmartPsiElementPointer` 保存，修改后仍可跳转。
 - 不做：编辑器波浪线、gutter 报错图标、状态栏常驻提示。
 
+### 14.5 责任人（真机反馈 2026-09-07 加入）
+
+问题扫出来一批，想直接按人分派认领。走平台通用 VCS API（`AbstractVcs.getAnnotationProvider()`），不认哪个具体 VCS——Git4Idea 装了就有用，没装就老老实实什么都不显示，不装作能看穿不存在的版本库。`GitBlameService`（Project 级服务，实现 `Disposable`）：
+
+```text
+blameLineCached(file, line)   只读缓存，不触发新的 annotate，EDT 安全，渲染树用这个
+blameLine(file, line, indicator)  后台线程调用，真正触发 annotate（可能起子进程），缓存结果
+warm(files, indicator)        批量预热，工具栏"显示责任人"打开时后台跑一遍
+```
+
+`annotate()` 结果按 `VirtualFile` + `modificationStamp` 缓存，文件改动后自动失效重算；Project 关闭时 `dispose()` 释放全部 `FileAnnotation`。"作者"不是 `FileAnnotation` 的一等方法，要在 `getAspects()` 里按 `LineAnnotationAspect.AUTHOR` 找。
+
+工具栏"显示责任人"（默认关）：打开后台预热当前列表涉及的全部文件，完成后 `tree.repaint()`，渲染器只读缓存追加"作者  日期"，没有就什么都不加，不占位置、不显示"加载中"。右键"查看该处提交信息"：单文件单行，后台起个小进度条即时查，不依赖开关状态。
+
+依赖 `com.intellij.modules.vcs`（`plugin.xml` 新增一条 `<depends>`）——该模块在所有主流 JetBrains IDE（含 Community）里都在，与已有的 `com.intellij.modules.java` / `.xml` 一样按硬依赖处理，不做可选依赖的复杂度。
+
+**真机反馈（2026-09-08）修的一个线程崩溃**：`appendBlame` 最初直接用 `ri.javaElement().getContainingFile().getVirtualFile()` 拿文件，在树的展开 / 绘制过程里报
+`Read access is allowed from inside read-action only`——渲染发生在 Swing 布局线程上，没有 read action，碰 `PsiElement.getContainingFile()`（哪怕只读）会被 2024.2+ 的线程模型断言拦下来。改法沿用 `ReportedIssue.moduleName` 那次修复定下的同一条规矩：**渲染 / 预热阶段只准碰扫描时已经算好的纯数据，不准碰 PSI**——`appendBlame`、`addFileOf`（预热用的文件收集）、`viewCommit`（右键查看提交信息）统一改成从 `ContractIssue.primaryLocation()`（`filePath` + `line`，纯 `String`/`int`，扫描时的 read action 里已经算好）取文件，`VirtualFile` 用 `CheckRunContext.findFileForNavigation` 查（VFS 查找，不是 PSI，EDT 上一直安全，`navigateToJava` 的无法解析分支早就这么用）。
+
 ---
 
 ## 15. 抑制与配置
@@ -1000,6 +1048,7 @@ DAL-006：`'OrderMapper.queryOrder' 匹配到多个 Mapper statement，无法确
 忽略参数（支持通配 page* / *Sort）
 忽略内置分页 / 排序参数名单（默认开）
 展开实体参数逐属性检查（默认开，低置信度）
+上游赋值分析（默认开，见 6.1B）
 忽略 statement
 组合抑制列表
 忽略路径模式（如 **/mapper/oracle/**）

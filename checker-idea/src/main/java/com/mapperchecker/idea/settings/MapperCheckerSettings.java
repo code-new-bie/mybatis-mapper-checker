@@ -48,6 +48,8 @@ public final class MapperCheckerSettings implements PersistentStateComponent<Map
         public List<String> templateStatementIds = new ArrayList<>();
         /** 纯 Java 规则（DAL-004 / 020 / 022 / 030）是否在编辑器里实时提示，默认关。 */
         public boolean realtimeJavaRules = false;
+        /** 是否分析"上游有没有真的赋值"来调整 DAL-001 / DAL-010 的置信度与备注，默认开。 */
+        public boolean upstreamAssignmentAnalysis = true;
         public String lastScope = "PROJECT";
         public String exportPath = "";
     }
@@ -108,7 +110,8 @@ public final class MapperCheckerSettings implements PersistentStateComponent<Map
                         state.queryClassSuffixes,
                         com.mapperchecker.core.contract.RuleOptions.parseCopyMethodLines(state.copyMethods),
                         new HashSet<>(state.templateStatementIds),
-                        null));
+                        null),
+                state.upstreamAssignmentAnalysis);
     }
 
     // ---- 报告右键写入 ----

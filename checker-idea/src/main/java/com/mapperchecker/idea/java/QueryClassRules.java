@@ -96,11 +96,11 @@ public final class QueryClassRules {
     }
 
     /**
-     * @param setterUsages 扫描阶段登记的 setter 调用（"实体全限定名#属性" → 位置）。命中即知道有人 set，
+     * @param setterUsages 扫描阶段登记的 setter 调用（"实体全限定名#属性" → 证据）。命中即知道有人 set，
      *                     省掉一次全项目引用搜索；没命中的属性才回退到搜索，且只在 DAL-011 开启时才需要区分
      */
     public void check(@NotNull Map<String, Usage> usages, @NotNull Set<String> reflectiveCopyTargets,
-                      @NotNull Map<String, String> setterUsages, @Nullable ProgressIndicator indicator) {
+                      @NotNull Map<String, SetterEvidence> setterUsages, @Nullable ProgressIndicator indicator) {
         boolean want010 = settings.isEnabled(RuleId.DAL_010);
         boolean want011 = settings.isEnabled(RuleId.DAL_011);
         if (!want010 && !want011) {
@@ -137,11 +137,19 @@ public final class QueryClassRules {
                 }
                 String remark = copied ? MapperCheckerBundle.message("remark.reflective.copy.target") : "";
                 // 快路径：扫描阶段已经见过 x.setProp(...)
-                String recorded = setterUsages.get(fqn + "#" + prop);
+                SetterEvidence recorded = setterUsages.get(fqn + "#" + prop);
                 if (recorded != null) {
                     if (want010) {
-                        String message = MapperCheckerBundle.message("issue.DAL-010", entity, prop, recorded, u.statementIds.size());
-                        report(RuleId.DAL_010, Confidence.HIGH, message, remark, prop, fqn, e.getValue(), u);
+                        // 上游赋值分析：目前见过的调用全是传 null，大概率是死代码，降一级优先度，但仍然报——
+                        // 静态分析看不到全部调用点，不敢断言"一定没用"
+                        Confidence confidence = Confidence.HIGH;
+                        String upstream = "";
+                        if (settings.upstreamAssignmentAnalysis() && !recorded.anyRealValue()) {
+                            confidence = confidence.lower();
+                            upstream = MapperCheckerBundle.message("remark.upstream.not_assigned");
+                        }
+                        String message = MapperCheckerBundle.message("issue.DAL-010", entity, prop, recorded.exampleLocation(), u.statementIds.size());
+                        report(RuleId.DAL_010, confidence, message, combine(remark, upstream), prop, fqn, e.getValue(), u);
                     }
                     continue;
                 }
@@ -172,6 +180,13 @@ public final class QueryClassRules {
 
     private static boolean isUsed(Set<String> usedRoots, String prop) {
         return usedRoots.contains(prop);
+    }
+
+    static String combine(String base, String extra) {
+        if (extra.isEmpty()) {
+            return base;
+        }
+        return base.isEmpty() ? extra : base + " " + extra;
     }
 
     private void report(RuleId rule, Confidence confidence, String message, String remark,

@@ -22,6 +22,7 @@ import java.util.Set;
  * @param ignoreBuiltinPagination  是否忽略内置分页 / 排序参数名单（默认开）
  * @param checkBeanProperties      是否展开实体参数逐属性检查（默认开，低置信度）
  * @param rules                    团队规范规则的可配置项
+ * @param upstreamAssignmentAnalysis 是否分析"上游有没有真的赋值"来调整 DAL-001 / DAL-010 的置信度与备注（默认开）
  */
 public record CheckSettings(
         List<String> ignoredParameterPatterns,
@@ -34,9 +35,19 @@ public record CheckSettings(
         Map<RuleId, Severity> severityOverrides,
         boolean ignoreBuiltinPagination,
         boolean checkBeanProperties,
-        RuleOptions rules) {
+        RuleOptions rules,
+        boolean upstreamAssignmentAnalysis) {
 
     public static final int DEFAULT_TRACE_DEPTH = 3;
+
+    /** 兼容构造：无规则选项、上游赋值分析默认开。 */
+    public CheckSettings(List<String> ignoredParameterPatterns, Set<String> ignoredStatements, Set<String> suppressedPairs,
+                         List<String> ignoredPathPatterns, int traceDepth, boolean strictVisibility,
+                         Set<RuleId> disabledRules, Map<RuleId, Severity> severityOverrides,
+                         boolean ignoreBuiltinPagination, boolean checkBeanProperties, RuleOptions rules) {
+        this(ignoredParameterPatterns, ignoredStatements, suppressedPairs, ignoredPathPatterns, traceDepth,
+                strictVisibility, disabledRules, severityOverrides, ignoreBuiltinPagination, checkBeanProperties, rules, true);
+    }
 
     /** 兼容构造：无规则选项。 */
     public CheckSettings(List<String> ignoredParameterPatterns, Set<String> ignoredStatements, Set<String> suppressedPairs,
@@ -44,7 +55,7 @@ public record CheckSettings(
                          Set<RuleId> disabledRules, Map<RuleId, Severity> severityOverrides,
                          boolean ignoreBuiltinPagination, boolean checkBeanProperties) {
         this(ignoredParameterPatterns, ignoredStatements, suppressedPairs, ignoredPathPatterns, traceDepth,
-                strictVisibility, disabledRules, severityOverrides, ignoreBuiltinPagination, checkBeanProperties, null);
+                strictVisibility, disabledRules, severityOverrides, ignoreBuiltinPagination, checkBeanProperties, null, true);
     }
 
     /** 兼容旧构造：分页忽略与实体属性检查均为默认开。 */
@@ -52,7 +63,7 @@ public record CheckSettings(
                          List<String> ignoredPathPatterns, int traceDepth, boolean strictVisibility,
                          Set<RuleId> disabledRules, Map<RuleId, Severity> severityOverrides) {
         this(ignoredParameterPatterns, ignoredStatements, suppressedPairs, ignoredPathPatterns, traceDepth,
-                strictVisibility, disabledRules, severityOverrides, true, true, null);
+                strictVisibility, disabledRules, severityOverrides, true, true, null, true);
     }
 
     public CheckSettings {
@@ -68,7 +79,7 @@ public record CheckSettings(
 
     public static CheckSettings defaults() {
         return new CheckSettings(List.of(), Set.of(), Set.of(), List.of(), DEFAULT_TRACE_DEPTH, true,
-                Set.of(), new EnumMap<>(RuleId.class), true, true, RuleOptions.defaults());
+                Set.of(), new EnumMap<>(RuleId.class), true, true, RuleOptions.defaults(), true);
     }
 
     /** 该参数名 / 路径是否命中忽略配置（用户列表 + 内置分页名单）。 */

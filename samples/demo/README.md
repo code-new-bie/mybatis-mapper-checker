@@ -12,7 +12,7 @@ Tools → MyBatis Mapper Checker → 检查整个项目
 | DAL-001 | merchantId | OrderMapper.queryByPositional | OrderMapper.java，中置信度 |
 | DAL-001 | poiId | OrderMapper.queryByMap | OrderService.java byMap 的 put 行 |
 | DAL-001 | poiId | OrderMapper.queryByMap | OrderService.java buildParams 的 put 行，中置信度，附路径 |
-| DAL-001 | remark | OrderMapper.queryByBean | OrderQuery.java 字段，低置信度（pageNum / pageSize 被分页名单忽略） |
+| DAL-001 | remark | OrderMapper.queryByBean | OrderMapper.java：query 方法的 OrderQuery 参数上（双击跳到 DAO 方法，不是实体字段），低置信度（pageNum / pageSize 被分页名单忽略） |
 | DAL-005 | — | OrderMapper.missingStatement | OrderMapper.java 方法名 |
 | DAL-022 | query | OrderMapper.queryByBean | OrderMapper.java：Query 参数没有 @Param("query") |
 | DAL-004 | q | — | OrderConverter.toQuery：copyProperties 源位置传了空对象 |

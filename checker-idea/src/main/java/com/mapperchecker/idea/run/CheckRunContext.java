@@ -66,8 +66,13 @@ public final class CheckRunContext {
     public final Map<String, com.mapperchecker.idea.java.QueryClassRules.Usage> queryUsages = new java.util.LinkedHashMap<>();
     /** 被 copyProperties 当作目标的实体全限定名，字段来源静态看不见。 */
     public final Set<String> reflectiveCopyTargets = new HashSet<>();
-    /** 扫描过程中见到的 setter 调用："实体全限定名#属性" → 位置，供 DAL-010 免去逐属性引用搜索。 */
-    public final Map<String, String> setterUsages = new HashMap<>();
+    /** 扫描过程中见到的 setter 调用："实体全限定名#属性" → 证据，供 DAL-010 与上游赋值分析共用。 */
+    public final Map<String, com.mapperchecker.idea.java.SetterEvidence> setterUsages = new HashMap<>();
+    /**
+     * 声明级 DAL-001 上游赋值分析要去查 Mapper 方法的调用点，用的范围与单 Map 参数调用点追踪一致。
+     * CheckRunner 算出真实范围后可以覆盖；构造时先退化为整项目。
+     */
+    public com.intellij.psi.search.GlobalSearchScope callSiteScope;
 
     public CheckRunContext(@NotNull Project project, @NotNull CheckSettings settings) {
         this.project = project;
@@ -80,6 +85,7 @@ public final class CheckRunContext {
         this.locationRules = new StatementLocationRules(settings);
         this.suppression = new SuppressionMatcher(settings);
         this.exemptions = com.mapperchecker.idea.suppress.ExemptionService.getInstance(project);
+        this.callSiteScope = com.intellij.psi.search.GlobalSearchScope.projectScope(project);
         for (com.mapperchecker.core.contract.Exemption e : exemptions.all()) {
             if (!e.isComplete()) {
                 statistics.incInvalidExemptions();
@@ -142,6 +148,13 @@ public final class CheckRunContext {
                 continue; // 该 put 对别的 statement 有效，不报
             }
             issues.add(r);
+        }
+        if (settings.upstreamAssignmentAnalysis()) {
+            // 置信度可能变，必须在排序之前调整完
+            UpstreamAssignmentAnalyzer analyzer = new UpstreamAssignmentAnalyzer(
+                    callSiteScope == null ? com.intellij.psi.search.GlobalSearchScope.projectScope(project) : callSiteScope,
+                    setterUsages);
+            issues.replaceAll(analyzer::adjust);
         }
         issues.sort((a, b) -> {
             int c = a.issue().ruleId().compareTo(b.issue().ruleId());

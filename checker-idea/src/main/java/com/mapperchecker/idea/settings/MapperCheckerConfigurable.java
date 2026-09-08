@@ -54,6 +54,7 @@ public final class MapperCheckerConfigurable implements Configurable {
     private JBTextArea copyMethods;
     private JBTextArea templateIds;
     private JBCheckBox realtimeJavaRules;
+    private JBCheckBox upstreamAssignmentAnalysis;
     private final Map<RuleId, JBCheckBox> ruleEnabled = new EnumMap<>(RuleId.class);
     private final Map<RuleId, JComboBox<Severity>> ruleSeverity = new EnumMap<>(RuleId.class);
 
@@ -88,6 +89,7 @@ public final class MapperCheckerConfigurable implements Configurable {
         copyMethods = area();
         templateIds = area();
         realtimeJavaRules = new JBCheckBox(MapperCheckerBundle.message("settings.realtime.java.rules"));
+        upstreamAssignmentAnalysis = new JBCheckBox(MapperCheckerBundle.message("settings.upstream.assignment"));
 
         JPanel rules = new JPanel(new GridLayout(RuleId.values().length + 1, 3, 8, 2));
         rules.add(new JBLabel(MapperCheckerBundle.message("settings.rule.column.rule")));
@@ -110,6 +112,7 @@ public final class MapperCheckerConfigurable implements Configurable {
                 .addComponent(gutterIcon)
                 .addComponent(ignorePagination)
                 .addComponent(checkBeanProperties)
+                .addComponent(upstreamAssignmentAnalysis)
                 .addSeparator()
                 .addComponent(new JBLabel("<html><b>" + MapperCheckerBundle.message("settings.rules") + "</b></html>"))
                 .addComponent(rules)
@@ -157,6 +160,7 @@ public final class MapperCheckerConfigurable implements Configurable {
         if (gutterIcon.isSelected() != s.showGutterIcon) return true;
         if (ignorePagination.isSelected() != s.ignoreBuiltinPagination) return true;
         if (checkBeanProperties.isSelected() != s.checkBeanProperties) return true;
+        if (upstreamAssignmentAnalysis.isSelected() != s.upstreamAssignmentAnalysis) return true;
         if (!lines(querySuffixes).equals(s.queryClassSuffixes)) return true;
         if (!lines(copyMethods).equals(s.copyMethods)) return true;
         if (!lines(templateIds).equals(s.templateStatementIds)) return true;
@@ -182,6 +186,7 @@ public final class MapperCheckerConfigurable implements Configurable {
         s.showGutterIcon = gutterIcon.isSelected();
         s.ignoreBuiltinPagination = ignorePagination.isSelected();
         s.checkBeanProperties = checkBeanProperties.isSelected();
+        s.upstreamAssignmentAnalysis = upstreamAssignmentAnalysis.isSelected();
         s.queryClassSuffixes = new ArrayList<>(lines(querySuffixes));
         s.copyMethods = new ArrayList<>(lines(copyMethods));
         s.templateStatementIds = new ArrayList<>(lines(templateIds));
@@ -214,6 +219,7 @@ public final class MapperCheckerConfigurable implements Configurable {
         gutterIcon.setSelected(s.showGutterIcon);
         ignorePagination.setSelected(s.ignoreBuiltinPagination);
         checkBeanProperties.setSelected(s.checkBeanProperties);
+        upstreamAssignmentAnalysis.setSelected(s.upstreamAssignmentAnalysis);
         querySuffixes.setText(String.join("\n", s.queryClassSuffixes));
         copyMethods.setText(String.join("\n", s.copyMethods));
         templateIds.setText(String.join("\n", s.templateStatementIds));

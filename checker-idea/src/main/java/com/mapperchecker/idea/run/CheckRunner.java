@@ -79,6 +79,7 @@ public final class CheckRunner {
         });
 
         GlobalSearchScope callSiteScope = scope.callSiteScope(project);
+        ctx.callSiteScope = callSiteScope;
         int total = found.mapperInterfaces().size() + found.stringCalls().size() + javaFiles.size()
                 + (discoveryScope != null ? 2 : 0);
         int done = 0;
@@ -127,8 +128,14 @@ public final class CheckRunner {
         return new Outcome(result, reported, exempted);
     }
 
-    /** 纯 Java 规则与 DAL-010/011 都关掉时，整个 Java 文件遍历可以省掉。 */
+    /**
+     * 纯 Java 规则、DAL-010/011、上游赋值分析都关掉时，整个 Java 文件遍历可以省掉——
+     * 上游赋值分析要用扫描时顺手登记的 setterUsages 表（与 DAL-010 共用），单独开着也得跑这一遍。
+     */
     private boolean needsJavaFileScan() {
+        if (settings.upstreamAssignmentAnalysis()) {
+            return true;
+        }
         for (com.mapperchecker.core.model.RuleId r : List.of(
                 com.mapperchecker.core.model.RuleId.DAL_004, com.mapperchecker.core.model.RuleId.DAL_020,
                 com.mapperchecker.core.model.RuleId.DAL_030, com.mapperchecker.core.model.RuleId.DAL_010,

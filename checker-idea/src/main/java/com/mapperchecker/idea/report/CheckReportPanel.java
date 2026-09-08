@@ -6,16 +6,20 @@ import com.intellij.openapi.actionSystem.ActionToolbar;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
+import com.intellij.openapi.actionSystem.ToggleAction;
 import com.intellij.openapi.fileChooser.FileChooserFactory;
 import com.intellij.openapi.fileChooser.FileSaverDescriptor;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.options.ShowSettingsUtil;
+import com.intellij.openapi.progress.ProgressIndicator;
+import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileWrapper;
 import com.intellij.psi.PsiElement;
+import com.mapperchecker.idea.vcs.GitBlameService;
 import com.intellij.ui.ColoredTreeCellRenderer;
 import com.intellij.ui.JBSplitter;
 import com.intellij.ui.PopupHandler;
@@ -30,9 +34,11 @@ import com.mapperchecker.core.model.CheckResult;
 import com.mapperchecker.core.model.Confidence;
 import com.mapperchecker.core.model.ContractIssue;
 import com.mapperchecker.core.model.RuleId;
+import com.mapperchecker.core.model.SourceLocation;
 import com.mapperchecker.core.model.Statistics;
 import com.mapperchecker.core.model.UnresolvedInvocation;
 import com.mapperchecker.idea.MapperCheckerBundle;
+import com.mapperchecker.idea.run.CheckRunContext;
 import com.mapperchecker.idea.run.CheckRunner;
 import com.mapperchecker.idea.run.CheckScope;
 import com.mapperchecker.idea.run.ContractCheckTask;
@@ -77,6 +83,7 @@ public final class CheckReportPanel extends JPanel {
     private final JComboBox<String> ruleFilter = new JComboBox<>();
     private final JComboBox<String> confidenceFilter = new JComboBox<>();
     private final Set<ReportedIssue> confirmed = new HashSet<>();
+    private boolean showBlame = false;
 
     private @Nullable CheckRunner.Outcome outcome;
     private @Nullable CheckScope scope;
@@ -311,6 +318,83 @@ public final class CheckReportPanel extends JPanel {
         }
     }
 
+    /** 选中的问题，豁免行取它包着的那条。跳转、责任人查询都按这个统一处理。 */
+    private @Nullable ReportedIssue selectedReportedIssue() {
+        ReportedExemption re = selectedExemption();
+        return re != null ? re.reported() : selectedIssue();
+    }
+
+    /** 打开"显示责任人"时，把当前树上看得到的文件先在后台预热一遍，避免渲染时现起 git 进程。 */
+    private void warmBlame() {
+        if (outcome == null) {
+            return;
+        }
+        Set<VirtualFile> files = new HashSet<>();
+        for (ReportedIssue ri : outcome.reported()) {
+            addFileOf(ri, files);
+        }
+        for (ReportedExemption re : outcome.exempted()) {
+            addFileOf(re.reported(), files);
+        }
+        if (files.isEmpty()) {
+            return;
+        }
+        new Task.Backgroundable(project, MapperCheckerBundle.message("action.show.blame"), true) {
+            @Override
+            public void run(@NotNull ProgressIndicator indicator) {
+                GitBlameService.getInstance(project).warm(files, indicator);
+            }
+
+            @Override
+            public void onFinished() {
+                if (showBlame) {
+                    tree.repaint();
+                }
+            }
+        }.queue();
+    }
+
+    /**
+     * 拿文件走 {@link ContractIssue#primaryLocation()}（纯数据，扫描时已经在 read action 里算好），
+     * 不走 {@link ReportedIssue#javaElement()}——那是 PSI，渲染 / 预热都可能发生在 EDT 上还没进
+     * read action 的地方，直接摸 PSI 会被 2024.2+ 的线程模型断言拦下来（真机崩过一次）。
+     */
+    private static @Nullable VirtualFile fileOf(ReportedIssue ri) {
+        SourceLocation loc = ri.issue().primaryLocation();
+        return loc.isKnown() ? CheckRunContext.findFileForNavigation(loc.filePath()) : null;
+    }
+
+    private static void addFileOf(ReportedIssue ri, Set<VirtualFile> out) {
+        VirtualFile vf = fileOf(ri);
+        if (vf != null) {
+            out.add(vf);
+        }
+    }
+
+    /** 单条查责任人：后台起个小进度条，比整批预热轻，随时可用。 */
+    private void viewCommit(ReportedIssue ri) {
+        VirtualFile vf = fileOf(ri);
+        int line = ri.issue().primaryLocation().line();
+        if (vf == null || line <= 0) {
+            Messages.showInfoMessage(project, MapperCheckerBundle.message("report.blame.unavailable"),
+                    MapperCheckerBundle.message("action.view.commit"));
+            return;
+        }
+        GitBlameService.BlameInfo[] result = new GitBlameService.BlameInfo[1];
+        com.intellij.openapi.progress.ProgressManager.getInstance().runProcessWithProgressSynchronously(
+                () -> result[0] = GitBlameService.getInstance(project).blameLine(vf, line, null),
+                MapperCheckerBundle.message("action.view.commit"), true, project);
+        GitBlameService.BlameInfo info = result[0];
+        if (info == null) {
+            Messages.showInfoMessage(project, MapperCheckerBundle.message("report.blame.unavailable"),
+                    MapperCheckerBundle.message("action.view.commit"));
+            return;
+        }
+        Messages.showInfoMessage(project,
+                MapperCheckerBundle.message("report.blame.info", info.author(), info.date(), info.revision()),
+                MapperCheckerBundle.message("action.view.commit"));
+    }
+
     private void navigateToMapper(@Nullable ReportedIssue ri) {
         if (ri == null) {
             return;
@@ -357,6 +441,28 @@ public final class CheckReportPanel extends JPanel {
                 ShowSettingsUtil.getInstance().showSettingsDialog(project, MapperCheckerConfigurable.class);
             }
         });
+        group.addSeparator();
+        group.add(new ToggleAction(MapperCheckerBundle.message("action.show.blame"), null, AllIcons.Vcs.History) {
+            @Override
+            public boolean isSelected(@NotNull AnActionEvent e) {
+                return showBlame;
+            }
+
+            @Override
+            public void setSelected(@NotNull AnActionEvent e, boolean state) {
+                showBlame = state;
+                if (state) {
+                    warmBlame();
+                } else {
+                    tree.repaint();
+                }
+            }
+
+            @Override
+            public @NotNull com.intellij.openapi.actionSystem.ActionUpdateThread getActionUpdateThread() {
+                return com.intellij.openapi.actionSystem.ActionUpdateThread.EDT;
+            }
+        });
         ActionToolbar tb = ActionManager.getInstance().createActionToolbar("MapperCheckerReportToolbar", group, true);
         tb.setTargetComponent(this);
         return tb.getComponent();
@@ -380,6 +486,25 @@ public final class CheckReportPanel extends JPanel {
             public void update(@NotNull AnActionEvent e) {
                 ReportedIssue ri = selectedIssue();
                 e.getPresentation().setEnabled(ri != null && ri.mapperElement() != null);
+            }
+
+            @Override
+            public @NotNull com.intellij.openapi.actionSystem.ActionUpdateThread getActionUpdateThread() {
+                return com.intellij.openapi.actionSystem.ActionUpdateThread.EDT;
+            }
+        });
+        g.add(new DumbAwareAction(MapperCheckerBundle.message("action.view.commit")) {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                ReportedIssue ri = selectedReportedIssue();
+                if (ri != null) {
+                    viewCommit(ri);
+                }
+            }
+
+            @Override
+            public void update(@NotNull AnActionEvent e) {
+                e.getPresentation().setEnabled(selectedReportedIssue() != null);
             }
 
             @Override
@@ -582,6 +707,7 @@ public final class CheckReportPanel extends JPanel {
                 if (!i.remark().isEmpty()) {
                     append("  " + i.remark(), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
                 }
+                appendBlame(ri);
                 if (done) {
                     append(MapperCheckerBundle.message("report.confirmed.suffix"), SimpleTextAttributes.GRAYED_ATTRIBUTES);
                 }
@@ -595,6 +721,7 @@ public final class CheckReportPanel extends JPanel {
                 append(shortStatement(i.statementId()) + "  ", SimpleTextAttributes.GRAYED_ATTRIBUTES);
                 append(i.primaryLocation().display() + "  ", SimpleTextAttributes.GRAYED_ATTRIBUTES);
                 append(re.exemption().signature() + "：" + re.exemption().reason(), SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES);
+                appendBlame(re.reported());
             } else if (o instanceof UnresolvedInvocation u) {
                 setIcon(AllIcons.General.Note);
                 append(MapperCheckerBundle.message("unresolved." + u.reason().name()) + "  ", SimpleTextAttributes.REGULAR_ATTRIBUTES);
@@ -602,6 +729,29 @@ public final class CheckReportPanel extends JPanel {
                 append(u.location().display(), SimpleTextAttributes.GRAYED_ATTRIBUTES);
             } else if (o != null) {
                 append(o.toString(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
+            }
+        }
+
+        /**
+         * 只读缓存，不在渲染时触发新的 annotate；没预热 / 没 VCS / 未提交都静默跳过，不占位置。
+         * 拿文件走 primaryLocation（纯数据），不摸 PSI——渲染发生在 Swing 布局 / 绘制过程中，
+         * 不在 read action 里，直接碰 PSI（哪怕只是 getContainingFile）会被线程模型断言拦下来。
+         */
+        private void appendBlame(ReportedIssue ri) {
+            if (!showBlame) {
+                return;
+            }
+            SourceLocation loc = ri.issue().primaryLocation();
+            if (!loc.isKnown() || loc.line() <= 0) {
+                return;
+            }
+            VirtualFile vf = CheckRunContext.findFileForNavigation(loc.filePath());
+            if (vf == null) {
+                return;
+            }
+            GitBlameService.BlameInfo info = GitBlameService.getInstance(project).blameLineCached(vf, loc.line());
+            if (info != null) {
+                append("  ·  " + info.display(), SimpleTextAttributes.GRAYED_ATTRIBUTES);
             }
         }
 

@@ -123,7 +123,8 @@ public class MethodSignatureAndAnnotationTest extends LightJavaCodeInsightFixtur
         assertEquals(Set.of("poiId"), names(bean.parameters()));
         assertEquals(ParameterSourceType.BEAN_PROPERTY, bean.parameters().get(0).sourceType());
         assertEquals("OrderQuery", bean.parameters().get(0).ownerName());
-        assertTrue(bean.parameters().get(0).location().filePath().endsWith("OrderQuery.java"));
+        // 锚点用参数本身（真机反馈：双击应跳到 DAO 方法，而不是实体属性声明处）
+        assertTrue(bean.parameters().get(0).location().filePath().endsWith("OrderMapper.java"));
         assertEquals(MethodSignatureParameterResolver.Mode.NOT_COMPARABLE, MethodSignatureParameterResolver.resolve(method(c, "byId")).mode());
         assertEquals(MethodSignatureParameterResolver.Mode.NOT_COMPARABLE, MethodSignatureParameterResolver.resolve(method(c, "byStr")).mode());
         assertEquals(MethodSignatureParameterResolver.Mode.NOT_COMPARABLE, MethodSignatureParameterResolver.resolve(method(c, "none")).mode());
